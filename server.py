@@ -98,12 +98,13 @@ def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> F
     )
 
     # Safety monitor (collision detection + boundary violations)
-    safety_monitor = SafetyMonitor(rewind_orchestrator, base_backend, state_agg)
+    safety_monitor = SafetyMonitor(rewind_orchestrator, base_backend, state_agg, display=display)
 
     # Arm crash recovery monitor
     arm_monitor = ArmMonitor(
         state_agg, franka_backend, rewind_orchestrator, cfg.franka,
         service_manager=service_mgr,
+        display=display,
     )
 
     lease_mgr = LeaseManager(
@@ -130,23 +131,23 @@ def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> F
     lease_mgr.set_on_lease_start(_on_lease_start)
 
     # -- routes --------------------------------------------------------------
-    from routes.commands import create_router as cmd_router
     from routes.lease_routes import create_router as lease_router
     from routes.rewind_routes import create_router as rewind_router
     from routes.state_routes import create_router as state_router
     from routes.ws import create_router as ws_router
     from routes.code_routes import init_code_routes
     from routes.sdk_docs import router as sdk_docs_router
+    from routes.system_guide import router as system_guide_router
     from routes.yolo_routes import router as yolo_router
     from routes.display_routes import create_router as display_router
 
     app.include_router(state_router(state_agg, camera_backend, lease_mgr, base_backend, franka_backend, gripper_backend, system_logger))
     app.include_router(lease_router(lease_mgr))
-    app.include_router(cmd_router(lease_mgr, safety, base_backend, franka_backend, gripper_backend, feedback.broadcast, state_agg, system_logger))
     app.include_router(rewind_router(rewind_orchestrator, lease_mgr, system_logger, safety_monitor, arm_monitor))
     app.include_router(ws_router(state_agg, feedback, cfg, camera_backend))
     app.include_router(init_code_routes(lease_mgr))
     app.include_router(sdk_docs_router)
+    app.include_router(system_guide_router)
     app.include_router(yolo_router)
     app.include_router(display_router(display))
 

@@ -25,12 +25,7 @@ Options:
 
 ## Robot Control API
 
-Two control methods:
-
-1. **Code Execution API** (recommended) — Submit Python code that runs on the robot with access to `robot_sdk`
-2. **Direct Command API** (legacy) — Send individual HTTP commands for arm/base/gripper
-
-### Code Execution API (Recommended)
+### Code Execution API
 
 Submit Python code that runs in a subprocess with access to a rich SDK.
 
@@ -153,6 +148,7 @@ curl http://localhost:8080/code/sdk/markdown
 - When an exception occurs, code execution stops and the robot holds its current pose
 - Arm commands use smooth cubic interpolation (auto-calculated duration)
 - Commands are sent at 50 Hz until the target is reached
+- Velocity commands (`arm.send_joint_velocity()`, `arm.send_cartesian_velocity()`, `base.send_velocity()`) run for a specified duration then stop
 - Unavailable backends print a warning but don't crash
 - Rewind coordinates arm and base together through recorded waypoints
 
@@ -170,25 +166,6 @@ curl -X POST localhost:8080/code/execute \
   -H "Content-Type: application/json" \
   -d '{"code": "from robot_sdk import arm\narm.move_joints([0,0,0,0,0,0,0])"}'
 ```
-
-### Direct Command API (Legacy)
-
-> **Note:** The Code Execution API is recommended. Direct commands are retained for backwards compatibility.
-
-| Endpoint | Description |
-|----------|-------------|
-| `POST /cmd/base/move` | Move base (position or velocity) |
-| `POST /cmd/base/stop` | Stop base movement |
-| `POST /cmd/arm/move` | Move arm (joint/cartesian position/velocity) |
-| `POST /cmd/arm/stop` | Emergency stop arm |
-| `POST /cmd/gripper` | Gripper actions (activate/move/grasp/open/close/stop/calibrate) |
-| `POST /cmd/reset` | Reset via trajectory reversal |
-
-**Arm modes:** `joint_position` (7 floats rad), `cartesian_pose` (16 floats), `joint_velocity` (7 floats rad/s), `cartesian_velocity` (6 floats)
-
-**Base modes:** velocity (`vx`, `vy`, `wz`, `frame`) or position (`x`, `y`, `theta`)
-
-**Gripper actions:** `activate`, `calibrate`, `move`, `open`, `close`, `grasp`, `stop`
 
 ### State Endpoints
 
@@ -211,6 +188,11 @@ curl -X POST localhost:8080/code/execute \
 | `POST /lease/release` | Release lease `{"lease_id": "..."}` |
 | `POST /lease/extend` | Extend lease timeout `{"lease_id": "..."}` |
 | `GET /lease/status` | Current lease holder and queue |
+| `POST /lease/pause-queue` | Pause queue processing (admin) |
+| `POST /lease/resume-queue` | Resume queue processing (admin) |
+| `POST /lease/clear-queue` | Clear all queued lease requests (admin) |
+
+For frontend-facing documentation, see `GET /docs/guide/html`.
 
 ## Service Manager (Experimental)
 
@@ -362,7 +344,7 @@ curl -X PUT localhost:8080/rewind/config \
 | `backends/franka.py` | Franka server client |
 | `backends/gripper.py` | Gripper server client |
 | `backends/cameras.py` | Camera backend |
-| `routes/commands.py` | Command endpoints |
+| `routes/code_routes.py` | Code execution endpoints |
 | `routes/state_routes.py` | State/health endpoints |
 | `routes/lease_routes.py` | Lease endpoints |
 | `routes/service_routes.py` | Service management + dashboard |
@@ -370,7 +352,6 @@ curl -X PUT localhost:8080/rewind/config \
 | `routes/ws.py` | WebSocket handlers |
 | `code_executor.py` | Subprocess code execution engine |
 | `robot_sdk/` | SDK modules (arm, base, gripper, sensors, rewind) |
-| `routes/code_routes.py` | Code execution endpoints |
 | `routes/sdk_docs.py` | Auto-generated SDK documentation |
 | `test_api.sh` | API test script |
 | `controllers/` | Python controllers for arm and base |
