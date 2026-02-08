@@ -215,7 +215,7 @@ cd examples
 **Examples:**
 - `examples/simple_move.py`
 - `examples/pick_and_place.py`
-- `examples/test_execution.sh`
+- `tests/test_execution.sh`
 - `examples/README.md`
 
 **Documentation:**

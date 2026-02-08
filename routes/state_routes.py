@@ -86,7 +86,7 @@ def create_router(state_agg, camera_backend, lease_mgr, base_backend, franka_bac
         waypoints = [wp.to_dict() for wp in system_logger.get_waypoints()]
         return {"waypoints": waypoints, "count": len(system_logger)}
 
-    @router.get("/logs")
+    @router.get("/logs", include_in_schema=False)
     async def get_server_logs(limit: int = Query(default=100, ge=1, le=500)):
         """Get recent server logs for dashboard display."""
         from logging_config import get_log_buffer

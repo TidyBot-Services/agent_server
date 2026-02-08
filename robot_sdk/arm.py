@@ -412,6 +412,78 @@ class ArmAPI:
 
         raise ArmError("Timeout waiting for arm to reach target pose")
 
+    def send_joint_velocity(
+        self,
+        dq: list[float],
+        duration: float = 1.0,
+    ) -> None:
+        """Send joint velocity command for specified duration (blocking).
+
+        Streams the joint velocities at 50 Hz for the given duration,
+        then sends zero velocities to stop.
+
+        Args:
+            dq: 7 joint velocities in rad/s
+            duration: How long to send velocities in seconds (default: 1.0)
+
+        Raises:
+            ArmError: If command fails
+
+        Example:
+            arm.send_joint_velocity([0, 0, 0, 0, 0, 0.1, 0], duration=2.0)
+        """
+        if len(dq) != 7:
+            raise ArmError(f"Expected 7 joint velocities, got {len(dq)}")
+
+        self._backend.set_control_mode(self.MODE_JOINT_VELOCITY)
+        time.sleep(0.1)
+
+        command_interval = 1.0 / self._command_rate
+        start_time = time.time()
+
+        try:
+            while time.time() - start_time < duration:
+                self._backend.send_joint_velocity(list(dq))
+                time.sleep(command_interval)
+        finally:
+            self._backend.send_joint_velocity([0.0] * 7)
+
+    def send_cartesian_velocity(
+        self,
+        velocities: list[float],
+        duration: float = 1.0,
+    ) -> None:
+        """Send cartesian velocity command for specified duration (blocking).
+
+        Streams the cartesian velocities at 50 Hz for the given duration,
+        then sends zero velocities to stop.
+
+        Args:
+            velocities: 6 values [vx, vy, vz, wx, wy, wz] in m/s and rad/s
+            duration: How long to send velocities in seconds (default: 1.0)
+
+        Raises:
+            ArmError: If command fails
+
+        Example:
+            arm.send_cartesian_velocity([0, 0, 0.01, 0, 0, 0], duration=2.0)
+        """
+        if len(velocities) != 6:
+            raise ArmError(f"Expected 6 cartesian velocities, got {len(velocities)}")
+
+        self._backend.set_control_mode(self.MODE_CARTESIAN_VELOCITY)
+        time.sleep(0.1)
+
+        command_interval = 1.0 / self._command_rate
+        start_time = time.time()
+
+        try:
+            while time.time() - start_time < duration:
+                self._backend.send_cartesian_velocity(list(velocities))
+                time.sleep(command_interval)
+        finally:
+            self._backend.send_cartesian_velocity([0.0] * 6)
+
     def get_state(self) -> dict:
         """Get current arm state.
 

@@ -213,6 +213,13 @@ class YoloAPI:
         except Exception:
             return False
 
+    def _get_auth_headers(self) -> dict:
+        """Get API key header if configured."""
+        api_key = os.getenv("ROBOT_API_KEY")
+        if api_key:
+            return {"X-API-Key": api_key}
+        return {}
+
     def _fetch_camera_frame(self, camera_id: Optional[str] = None) -> bytes:
         """Fetch a JPEG frame from the agent server's camera endpoint.
 
@@ -231,7 +238,7 @@ class YoloAPI:
             url = f"{self._agent_url}/state/cameras"
 
         try:
-            req = urllib.request.Request(url)
+            req = urllib.request.Request(url, headers=self._get_auth_headers())
             with urllib.request.urlopen(req, timeout=10) as resp:
                 if resp.status != 200:
                     raise YoloError(f"Camera returned status {resp.status}")
@@ -506,7 +513,7 @@ class YoloAPI:
             url = f"{self._agent_url}/cameras/any/frame?stream=depth"
 
         try:
-            req = urllib.request.Request(url)
+            req = urllib.request.Request(url, headers=self._get_auth_headers())
             with urllib.request.urlopen(req, timeout=10) as resp:
                 if resp.status != 200:
                     raise YoloError(f"Depth frame returned status {resp.status}")
@@ -535,7 +542,7 @@ class YoloAPI:
             url = f"{self._agent_url}/cameras/any/intrinsics"
 
         try:
-            req = urllib.request.Request(url)
+            req = urllib.request.Request(url, headers=self._get_auth_headers())
             with urllib.request.urlopen(req, timeout=10) as resp:
                 if resp.status != 200:
                     raise YoloError(f"Intrinsics returned status {resp.status}")

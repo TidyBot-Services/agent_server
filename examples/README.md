@@ -15,19 +15,18 @@ source ~/tidybot_army/franka_interact/.venv/bin/activate
 python3 server.py --no-service-manager
 
 # Terminal 3: Run example
-cd ~/tidybot_army/tidybot-agent-server/examples
-./test_execution.sh minimal_test.py
+cd ~/tidybot_army/tidybot-agent-server
+tests/test_execution.sh examples/simple_move.py
 ```
 
 ## Example Files
 
 | File | Description |
 |------|-------------|
-| `minimal_test.py` | Basic joint movement using `arm.move_joints()` |
-| `joint_move_test.py` | Direct backend access (like rewind uses) |
 | `simple_move.py` | Arm and base movements |
 | `pick_and_place.py` | Complete pick-and-place sequence |
-| `test_execution.sh` | Shell script to submit code via API |
+
+Test scripts have been moved to `../tests/`.
 
 ## Submitting Code via API
 
@@ -281,8 +280,8 @@ except Exception as e:
 Run the test script to verify everything works:
 
 ```bash
-cd ~/tidybot_army/tidybot-agent-server/examples
-./test_execution.sh minimal_test.py
+cd ~/tidybot_army/tidybot-agent-server
+tests/test_execution.sh examples/simple_move.py
 ```
 
 Expected output:

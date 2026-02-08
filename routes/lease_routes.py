@@ -33,15 +33,15 @@ def create_router(lease_mgr):
     async def status():
         return lease_mgr.status()
 
-    @router.post("/clear-queue")
+    @router.post("/clear-queue", include_in_schema=False)
     async def clear_queue():
         return await lease_mgr.clear_queue()
 
-    @router.post("/pause-queue")
+    @router.post("/pause-queue", include_in_schema=False)
     async def pause_queue():
         return await lease_mgr.pause_queue()
 
-    @router.post("/resume-queue")
+    @router.post("/resume-queue", include_in_schema=False)
     async def resume_queue():
         return await lease_mgr.resume_queue()
 

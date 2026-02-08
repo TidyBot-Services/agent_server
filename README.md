@@ -137,7 +137,7 @@ curl -X POST localhost:8080/services/base_server/stop
 
 ## Lease API
 
-All command endpoints require an `X-Lease-Id` header.
+Code execution (`POST /code/execute`) requires an `X-Lease-Id` header.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -162,18 +162,18 @@ All command endpoints require an `X-Lease-Id` header.
 
 **Note**: `lease_id` is intentionally excluded from status for security. Holders receive their `lease_id` when acquiring and can retrieve it by calling acquire again with the same holder name.
 
-## Command API
+## Code Execution API
 
-Commands return `backend_unavailable` error if the required backend is not connected.
+All robot control is done via code execution. Submit Python code that runs with access to `robot_sdk`.
 
-| Endpoint | Method | Body | Description |
-|----------|--------|------|-------------|
-| `/cmd/base/move` | POST | `{x, y, theta}` or `{vx, vy, wz}` | Position or velocity move |
-| `/cmd/base/stop` | POST | — | Stop the base |
-| `/cmd/arm/move` | POST | `{mode, values}` | `joint_position`, `cartesian_pose`, `joint_velocity`, or `cartesian_velocity` |
-| `/cmd/arm/stop` | POST | — | Emergency stop the arm |
-| `/cmd/gripper` | POST | `{action, width?, speed?, force?}` | `move`, `grasp`, `open`, `close`, `stop`, `homing` |
-| `/cmd/reset` | POST | `{fraction?: 1.0}` | Reverse trajectory (0.0–1.0) |
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `POST /code/execute` | POST | Submit Python code (requires lease) |
+| `POST /code/stop` | POST | Stop running code (requires lease) |
+| `GET /code/status` | GET | Check execution status |
+| `GET /code/result` | GET | Get result from last execution |
+| `GET /code/sdk` | GET | Auto-generated SDK documentation (JSON) |
+| `GET /code/sdk/markdown` | GET | SDK documentation as markdown |
 
 ## Example Session
 
@@ -183,20 +183,20 @@ LEASE=$(curl -s -X POST localhost:8080/lease/acquire \
   -H 'Content-Type: application/json' \
   -d '{"holder":"my-agent"}' | jq -r .lease_id)
 
-# Move the base
-curl -X POST localhost:8080/cmd/base/move \
+# Move the base via code execution
+curl -X POST localhost:8080/code/execute \
   -H "Content-Type: application/json" \
   -H "X-Lease-Id: $LEASE" \
-  -d '{"x":1, "y":0, "theta":0}'
+  -d '{"code": "from robot_sdk import base\nbase.move_to_pose(1, 0, 0)"}'
 
 # Check trajectory
 curl localhost:8080/trajectory
 
-# Undo last 50% of moves
-curl -X POST localhost:8080/cmd/reset \
+# Undo last 50% of moves via rewind API
+curl -X POST localhost:8080/rewind/percentage \
   -H "Content-Type: application/json" \
   -H "X-Lease-Id: $LEASE" \
-  -d '{"fraction": 0.5}'
+  -d '{"percentage": 50.0}'
 
 # Release lease
 curl -X POST localhost:8080/lease/release \
@@ -220,7 +220,7 @@ tidybot-agent-server/
 │   ├── franka.py          # Franka arm ZMQ client
 │   └── cameras.py         # Camera capture
 ├── routes/
-│   ├── commands.py        # POST /cmd/* endpoints
+│   ├── code_routes.py     # POST /code/* endpoints
 │   ├── state_routes.py    # GET /state, /trajectory, /health
 │   ├── lease_routes.py    # Lease management endpoints
 │   ├── service_routes.py  # Service management + dashboard

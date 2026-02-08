@@ -20,6 +20,8 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 
+from auth import APIKeyMiddleware
+
 from backends.base import BaseBackend
 from backends.cameras import CameraBackend
 from backends.franka import FrankaBackend
@@ -46,10 +48,13 @@ logger = setup_logging("agent_server")
 def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> FastAPI:
     app = FastAPI(title="TidyBot Hardware Server")
 
+    # API key authentication (disabled if ROBOT_API_KEY not set)
+    app.add_middleware(APIKeyMiddleware)
+
     # Initialize app state for background tasks
     app.state.background_tasks = set()
 
-    @app.get("/")
+    @app.get("/", include_in_schema=False)
     async def root():
         if cfg.dashboard:
             return RedirectResponse(url="/services/dashboard")
@@ -299,7 +304,16 @@ def main():
         action="store_true",
         help="Disable the web dashboard GUI entirely",
     )
+    parser.add_argument(
+        "--api-key",
+        default=None,
+        help="API key for authentication (alternative to ROBOT_API_KEY env var)",
+    )
     args = parser.parse_args()
+
+    # Set API key from CLI arg if provided (env var takes precedence if both set)
+    if args.api_key and not os.getenv("ROBOT_API_KEY"):
+        os.environ["ROBOT_API_KEY"] = args.api_key
 
     # Build server config
     svc_mgr_cfg = ServiceManagerConfig(

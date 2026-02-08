@@ -14,6 +14,7 @@ import time
 
 from backends.franka import FrankaBackend
 from config import FrankaBackendConfig
+from display_state import DisplayBroadcaster
 from state import StateAggregator
 from system_logger import RewindOrchestrator
 
@@ -51,6 +52,7 @@ class ArmMonitor:
         franka_config: FrankaBackendConfig,
         robot_ip: str = _ROBOT_IP,
         service_manager=None,
+        display: DisplayBroadcaster | None = None,
     ) -> None:
         self._state_agg = state_agg
         self._franka = franka_backend
@@ -58,6 +60,7 @@ class ArmMonitor:
         self._franka_config = franka_config
         self._robot_ip = robot_ip
         self._service_manager = service_manager  # optional ServiceManager
+        self._display = display
 
         self._task: asyncio.Task | None = None
 
@@ -216,6 +219,9 @@ class ArmMonitor:
             time.time() - (self._arm_down_since or time.time()),
         )
 
+        if self._display is not None:
+            self._display.announce("Arm error, recovering")
+
         try:
             # 1. Stop any running code execution
             await self._stop_code_execution()
@@ -275,6 +281,9 @@ class ArmMonitor:
                 "ArmMonitor: recovery complete (total recoveries: %d)",
                 self._recovery_count,
             )
+
+            if self._display is not None:
+                self._display.announce("Arm recovered")
 
         except Exception:
             logger.exception("ArmMonitor: recovery sequence failed")

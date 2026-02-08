@@ -2,8 +2,8 @@
 """Gamepad client for controlling the TidyBot base.
 
 This script reads input from a Logitech gamepad and sends velocity commands
-to the base via the tidybot-agent-server API. Use it to test auto-rewind
-functionality by driving the base out of bounds.
+to the base via direct RPC to base_server. Lease management and rewind use
+the agent server HTTP API.
 
 Controls:
     Left Stick    - Move base (X/Y velocity)
@@ -24,6 +24,7 @@ Usage:
 """
 
 import argparse
+import multiprocessing.managers
 import sys
 import time
 import threading
@@ -42,13 +43,25 @@ except ImportError:
     sys.exit(1)
 
 
+class _BaseManager(multiprocessing.managers.BaseManager):
+    pass
+
+_BaseManager.register("Base")
+
+
 class GamepadClient:
     """Gamepad client for controlling TidyBot base."""
 
-    def __init__(self, server_url: str = "http://localhost:8080"):
+    def __init__(self, server_url: str = "http://localhost:8080",
+                 base_host: str = "localhost", base_port: int = 50000):
         self.server_url = server_url.rstrip("/")
         self.lease_id: Optional[str] = None
         self.running = False
+
+        # Direct RPC connection to base_server
+        self._base_host = base_host
+        self._base_port = base_port
+        self._base = None
 
         # Control parameters
         self.max_linear_vel = 0.3  # m/s
@@ -61,6 +74,20 @@ class GamepadClient:
         self.auto_rewind_enabled = False
         self.trajectory_length = 0
         self.is_rewinding = False
+
+        # Connect to base_server directly
+        try:
+            mgr = _BaseManager(
+                address=(self._base_host, self._base_port),
+                authkey=b"secret password",
+            )
+            mgr.connect()
+            self._base = mgr.Base()
+            self._base.ensure_initialized()
+            print(f"Connected to base_server at {self._base_host}:{self._base_port}")
+        except Exception as e:
+            print(f"Warning: Failed to connect to base_server: {e}")
+            print("  Velocity commands will not work.")
 
         # Initialize pygame
         pygame.init()
@@ -125,29 +152,20 @@ class GamepadClient:
             pass
 
     def send_velocity(self, vx: float, vy: float, wz: float) -> None:
-        """Send velocity command to base."""
-        if not self.lease_id:
+        """Send velocity command to base via direct RPC."""
+        if not self._base:
             return
         try:
-            requests.post(
-                f"{self.server_url}/cmd/base/move",
-                headers={"X-Lease-Id": self.lease_id},
-                json={"vx": vx, "vy": vy, "wz": wz},
-                timeout=0.5,
-            )
+            self._base.set_target_velocity([vx, vy, wz], frame="local")
         except:
             pass
 
     def stop_base(self) -> None:
-        """Stop the base."""
-        if not self.lease_id:
+        """Stop the base via direct RPC."""
+        if not self._base:
             return
         try:
-            requests.post(
-                f"{self.server_url}/cmd/base/stop",
-                headers={"X-Lease-Id": self.lease_id},
-                timeout=2,
-            )
+            self._base.stop()
         except:
             pass
 
@@ -394,7 +412,18 @@ def main():
     parser.add_argument(
         "--server",
         default="http://localhost:8080",
-        help="Server URL (default: http://localhost:8080)",
+        help="Agent server URL (default: http://localhost:8080)",
+    )
+    parser.add_argument(
+        "--base-host",
+        default="localhost",
+        help="Base server RPC host (default: localhost)",
+    )
+    parser.add_argument(
+        "--base-port",
+        type=int,
+        default=50000,
+        help="Base server RPC port (default: 50000)",
     )
     args = parser.parse_args()
 
@@ -403,7 +432,11 @@ def main():
     if "DISPLAY" not in os.environ:
         os.environ["SDL_VIDEODRIVER"] = "dummy"
 
-    client = GamepadClient(server_url=args.server)
+    client = GamepadClient(
+        server_url=args.server,
+        base_host=args.base_host,
+        base_port=args.base_port,
+    )
     client.run()
 
 

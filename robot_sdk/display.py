@@ -78,6 +78,11 @@ class DisplayAPI:
         url = f"{self._server_url}{path}"
         headers = {"Content-Type": "application/json"}
 
+        # Include API key if configured
+        api_key = os.getenv("ROBOT_API_KEY")
+        if api_key:
+            headers["X-API-Key"] = api_key
+
         try:
             body = json.dumps(data).encode("utf-8")
             req = urllib.request.Request(url, data=body, headers=headers, method="POST")

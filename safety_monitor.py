@@ -8,6 +8,7 @@ import math
 import time
 
 from backends.base import BaseBackend
+from display_state import DisplayBroadcaster
 from state import StateAggregator
 from system_logger import RewindOrchestrator
 
@@ -28,10 +29,12 @@ class SafetyMonitor:
         rewind_orchestrator: RewindOrchestrator,
         base_backend: BaseBackend,
         state_agg: StateAggregator,
+        display: DisplayBroadcaster | None = None,
     ) -> None:
         self._orchestrator = rewind_orchestrator
         self._base = base_backend
         self._state_agg = state_agg
+        self._display = display
         self._task: asyncio.Task | None = None
 
         # Collision detection state
@@ -189,6 +192,14 @@ class SafetyMonitor:
 
         logger.warning("SafetyMonitor: %s — stopping base and rewinding %.1f%%",
                         reason, cfg.auto_rewind_percentage)
+
+        # Voice announcement
+        if self._display is not None:
+            announce_map = {
+                "collision detected": "Collision detected, rewinding",
+                "boundary violation": "Boundary violation, rewinding",
+            }
+            self._display.announce(announce_map.get(reason, f"{reason}, rewinding"))
 
         # Stop the base immediately
         try:

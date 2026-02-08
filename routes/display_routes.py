@@ -8,6 +8,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
+from auth import check_ws_api_key
 from display_state import DisplayBroadcaster, VALID_EXPRESSIONS
 
 logger = logging.getLogger(__name__)
@@ -86,20 +87,21 @@ FACE_HTML = r"""<!DOCTYPE html>
     width: 40%; height: 18%; transition: all 0.4s ease; }
 
   /* Expressions */
-  /* happy — big smile arc, squinty happy eyes */
+  /* happy — big smile arc, squinty happy eyes, green */
   .face.happy .mouth { border-bottom: 6px solid #eee; border-radius: 0 0 50% 50%; height: 22%; }
-  .face.happy .eye { height: 18%; top: 38%; border-radius: 50% 50% 50% 50% / 20% 20% 80% 80%; }
+  .face.happy .eye { height: 18%; top: 38%; border-radius: 50% 50% 50% 50% / 20% 20% 80% 80%; background: #4caf50; }
   .face.happy .eye .pupil { bottom: 15%; }
 
-  /* thinking — small o mouth, eyes look up-right */
+  /* thinking — small o mouth, eyes look up-right, blue */
   .face.thinking .mouth { width: 16%; height: 16%; border: 4px solid #eee; border-radius: 50%; }
+  .face.thinking .eye { background: #64b5f6; }
   .face.thinking .eye .pupil { bottom: 60%; left: 65%; }
   .face.thinking .eye-left { height: 22%; }
   .face.thinking .eye-right { height: 22%; }
 
-  /* sad — frown arc */
+  /* sad — frown arc, red */
   .face.sad .mouth { border-top: 6px solid #eee; border-radius: 50% 50% 0 0; height: 14%; bottom: 24%; }
-  .face.sad .eye { height: 20%; top: 38%; }
+  .face.sad .eye { height: 20%; top: 38%; background: #ef5350; }
   .face.sad .eye .pupil { bottom: 10%; }
 
   /* neutral — straight line mouth */
@@ -112,11 +114,20 @@ FACE_HTML = r"""<!DOCTYPE html>
   .face.excited .eye { height: 30%; width: 24%; }
   .face.excited .eye .pupil { width: 40%; height: 40%; }
 
-  /* concerned — tight mouth, swirly eyes spinning backwards */
+  /* concerned — tight mouth, circly spiraling eyes */
   .face.concerned .mouth { height: 0; border-bottom: 5px solid #ffb74d; border-radius: 0; width: 25%; }
-  .face.concerned .eye { border: 4px solid #ffb74d; background: transparent; animation: spin-back 1.5s linear infinite; }
-  .face.concerned .eye .pupil { width: 55%; height: 55%; background: #ffb74d; }
-  @keyframes spin-back { from { transform: rotate(0deg); } to { transform: rotate(-360deg); } }
+  .face.concerned .eye { background: transparent; border: none; animation: none; overflow: visible; }
+  .face.concerned .eye .pupil { width: 50%; height: 50%; background: #ffb74d; border-radius: 50%;
+    animation: orbit 1.2s linear infinite; }
+  .face.concerned .eye::before, .face.concerned .eye::after {
+    content: ''; position: absolute; border-radius: 50%; border: 3px solid #ffb74d; background: transparent;
+    top: 50%; left: 50%; transform: translate(-50%, -50%); animation: spin-back 2s linear infinite; }
+  .face.concerned .eye::before { width: 90%; height: 90%; }
+  .face.concerned .eye::after { width: 55%; height: 55%; animation-direction: reverse; animation-duration: 1.4s; }
+  @keyframes orbit { from { transform: rotate(0deg) translateX(35%) rotate(0deg); }
+    to { transform: rotate(360deg) translateX(35%) rotate(-360deg); } }
+  @keyframes spin-back { from { transform: translate(-50%, -50%) rotate(0deg); }
+    to { transform: translate(-50%, -50%) rotate(-360deg); } }
 
   /* Blink animation */
   @keyframes blink {
@@ -145,11 +156,20 @@ FACE_HTML = r"""<!DOCTYPE html>
   .conn-dot { position: fixed; top: 12px; left: 12px; width: 10px; height: 10px;
     border-radius: 50%; background: #4caf50; transition: background 0.3s; z-index: 100; }
   .conn-dot.disconnected { background: #f44336; }
+
+  /* Mute toggle */
+  .mute-btn { position: fixed; bottom: 12px; left: 12px; width: 36px; height: 36px;
+    background: rgba(255,255,255,0.1); border: none; border-radius: 50%; color: #aaa;
+    font-size: 18px; cursor: pointer; z-index: 100; display: flex; align-items: center;
+    justify-content: center; transition: background 0.3s, color 0.3s; }
+  .mute-btn:hover { background: rgba(255,255,255,0.2); color: #eee; }
+  .mute-btn.muted { color: #f44336; }
 </style>
 </head>
 <body>
 
 <div class="conn-dot" id="connDot"></div>
+<button class="mute-btn" id="muteBtn" title="Toggle voice">&#x1f50a;</button>
 
 <div class="status-bar">
   <div class="status-label idle" id="statusLabel">Idle</div>
@@ -180,8 +200,32 @@ FACE_HTML = r"""<!DOCTYPE html>
   const queueEl = document.getElementById('queue');
   const connDot = document.getElementById('connDot');
 
+  const muteBtn = document.getElementById('muteBtn');
+
   let ws = null;
   let reconnectTimer = null;
+  let prevStatus = null;
+  let isFirstMessage = true;
+  let muted = localStorage.getItem('faceMuted') === 'true';
+
+  // Apply initial mute state
+  if (muted) { muteBtn.classList.add('muted'); muteBtn.innerHTML = '&#x1f507;'; }
+
+  muteBtn.addEventListener('click', function() {
+    muted = !muted;
+    localStorage.setItem('faceMuted', muted);
+    muteBtn.classList.toggle('muted', muted);
+    muteBtn.innerHTML = muted ? '&#x1f507;' : '&#x1f50a;';
+  });
+
+  function speak(text) {
+    if (muted || typeof speechSynthesis === 'undefined') return;
+    speechSynthesis.cancel();
+    var u = new SpeechSynthesisUtterance(text);
+    u.rate = 1.0;
+    u.pitch = 1.0;
+    speechSynthesis.speak(u);
+  }
 
   const STATUS_LABELS = {
     idle: 'Idle',
@@ -194,6 +238,13 @@ FACE_HTML = r"""<!DOCTYPE html>
     face.className = 'face ' + expression;
   }
 
+  var STATUS_VOICE = {
+    executing: 'Executing code',
+    rewinding: 'Rewinding',
+    error: 'Error',
+    idle: 'Ready',
+  };
+
   function setStatus(status, queueLen, holder) {
     statusLabel.textContent = STATUS_LABELS[status] || status;
     statusLabel.className = 'status-label ' + status;
@@ -201,6 +252,15 @@ FACE_HTML = r"""<!DOCTYPE html>
     // Background color per status
     document.body.className = document.body.className.replace(/bg-\S+/g, '').trim();
     document.body.classList.add('bg-' + (status || 'idle'));
+
+    // Voice announcement on status transition (skip initial snapshot)
+    if (!isFirstMessage && status !== prevStatus && STATUS_VOICE[status]) {
+      // Skip "Ready" if coming from null (initial)
+      if (!(status === 'idle' && prevStatus === null)) {
+        speak(STATUS_VOICE[status]);
+      }
+    }
+    prevStatus = status;
 
     if (queueLen > 0) {
       queueEl.textContent = queueLen + (queueLen === 1 ? ' person waiting' : ' people waiting');
@@ -225,8 +285,10 @@ FACE_HTML = r"""<!DOCTYPE html>
   function handleMessage(msg) {
     switch (msg.type) {
       case 'snapshot':
+        isFirstMessage = true;
         setFace(msg.face);
         setStatus(msg.robot_status, msg.queue_length, msg.current_holder);
+        isFirstMessage = false;
         if (msg.text) {
           contentText.textContent = msg.text;
           contentText.className = 'content-text ' + (msg.text_size || 'large');
@@ -271,12 +333,19 @@ FACE_HTML = r"""<!DOCTYPE html>
         showContent(false);
         setFace('happy');
         break;
+
+      case 'announce':
+        speak(msg.text);
+        break;
     }
   }
 
   function connect() {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(proto + '//' + location.host + '/ws/display');
+    const params = new URLSearchParams(location.search);
+    const apiKey = params.get('api_key') || '';
+    const wsUrl = proto + '//' + location.host + '/ws/display' + (apiKey ? '?api_key=' + encodeURIComponent(apiKey) : '');
+    ws = new WebSocket(wsUrl);
 
     ws.onopen = function() {
       connDot.classList.remove('disconnected');
@@ -309,7 +378,7 @@ FACE_HTML = r"""<!DOCTYPE html>
 def create_router(display: DisplayBroadcaster) -> APIRouter:
     """Create display router with REST, WebSocket, and HTML endpoints."""
 
-    @router.get("/face", response_class=HTMLResponse)
+    @router.get("/face", response_class=HTMLResponse, include_in_schema=False)
     async def face_page():
         """Serve the robot face HTML page."""
         return FACE_HTML
@@ -348,7 +417,16 @@ def create_router(display: DisplayBroadcaster) -> APIRouter:
     @router.websocket("/ws/display")
     async def ws_display(ws: WebSocket):
         """WebSocket for live display updates to face GUI."""
-        await display.connect(ws)
+        await ws.accept()
+        if not await check_ws_api_key(ws):
+            return
+        # Manually add to broadcaster (accept already called)
+        display._connections.append(ws)
+        try:
+            await ws.send_json(display._state.snapshot())
+        except Exception:
+            display._connections.remove(ws)
+            return
         try:
             while True:
                 # Keep connection alive; client doesn't need to send

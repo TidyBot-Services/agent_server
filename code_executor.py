@@ -765,4 +765,9 @@ asyncio.run(cleanup())
         if hasattr(self, "_server_url") and self._server_url:
             env["ROBOT_SERVER_URL"] = self._server_url
 
+        # Forward API key to subprocess (for SDK HTTP calls back to agent server)
+        api_key = os.getenv("ROBOT_API_KEY")
+        if api_key:
+            env["ROBOT_API_KEY"] = api_key
+
         return env

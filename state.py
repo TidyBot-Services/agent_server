@@ -225,6 +225,7 @@ class StateAggregator:
                         "ee_pose_world": world_ee_pose,
                         "ee_wrench": franka_state.get("ee_wrench", []),
                         "mode": franka_state.get("control_mode", 0),
+                        "auto_hold_active": franka_state.get("auto_hold_active", False),
                     },
                     "gripper": {
                         "position": gripper_state.get("position", 0),

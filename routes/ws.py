@@ -11,6 +11,8 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from auth import check_ws_api_key
+
 try:
     import cv2
     CV2_AVAILABLE = True
@@ -67,6 +69,8 @@ def create_router(state_agg, feedback_broadcaster: FeedbackBroadcaster, config, 
     @router.websocket("/ws/state")
     async def ws_state(ws: WebSocket):
         await ws.accept()
+        if not await check_ws_api_key(ws):
+            return
         interval = 1.0 / config.observer_state_hz
         try:
             while True:
@@ -79,7 +83,13 @@ def create_router(state_agg, feedback_broadcaster: FeedbackBroadcaster, config, 
 
     @router.websocket("/ws/feedback")
     async def ws_feedback(ws: WebSocket):
-        await feedback_broadcaster.connect(ws)
+        # Auth check before accepting (connect() calls accept)
+        # We need to accept first to send the close frame
+        await ws.accept()
+        if not await check_ws_api_key(ws):
+            return
+        # Re-add to broadcaster (accept already called)
+        feedback_broadcaster._connections.append(ws)
         try:
             while True:
                 # Keep connection alive; client doesn't need to send anything
@@ -92,17 +102,19 @@ def create_router(state_agg, feedback_broadcaster: FeedbackBroadcaster, config, 
     @router.websocket("/ws/cameras")
     async def ws_cameras(ws: WebSocket):
         """WebSocket endpoint for camera streaming.
-        
+
         Clients can send JSON messages to configure streaming:
         - {"action": "subscribe", "streams": ["color"], "fps": 15, "quality": 80}
         - {"action": "unsubscribe"}
         - {"action": "get_state"}
-        
+
         Server sends:
         - Binary frames: [4-byte header len][JSON header][JPEG data]
         - JSON state messages
         """
         await ws.accept()
+        if not await check_ws_api_key(ws):
+            return
         
         if camera_backend is None or not camera_backend.is_connected:
             await ws.send_json({"error": "Camera backend not available"})

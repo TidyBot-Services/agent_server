@@ -101,8 +101,23 @@ def generate_guide() -> dict:
     except ImportError:
         pass
 
+    # Check if auth is enabled
+    from auth import get_api_key
+    auth_enabled = get_api_key() is not None
+
     return {
         "title": "TidyBot Getting Started Guide",
+        "auth": {
+            "enabled": auth_enabled,
+            "description": (
+                "API key authentication is enabled. Include your API key in all requests."
+                if auth_enabled else
+                "Authentication is not enabled. No API key required."
+            ),
+            "header": "X-API-Key",
+            "query_param": "api_key",
+            "note": "For WebSocket connections, pass the key as ?api_key=... query parameter.",
+        },
         "sections": {
             "lease": {
                 "title": "Lease System",
@@ -214,6 +229,15 @@ def generate_guide() -> dict:
 def _render_markdown(guide: dict) -> str:
     """Render the guide dict as markdown."""
     md = f"# {guide['title']}\n\n"
+
+    # Auth section
+    auth = guide.get("auth", {})
+    if auth.get("enabled"):
+        md += "## Authentication\n\n"
+        md += f"{auth['description']}\n\n"
+        md += f"- **HTTP requests:** Include `{auth['header']}: YOUR_KEY` header\n"
+        md += f"- **Browser/WebSocket:** Append `?{auth['query_param']}=YOUR_KEY` to the URL\n"
+        md += f"\n> {auth['note']}\n\n"
 
     # Lease section
     lease = guide["sections"]["lease"]

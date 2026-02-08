@@ -116,6 +116,7 @@ class FrankaBackend:
             "ee_pose": list(state.O_T_EE),
             "ee_wrench": list(state.O_F_ext_hat_K),
             "control_mode": int(state.control_mode),
+            "auto_hold_active": bool(getattr(state, 'auto_hold_active', False)),
         }
 
     # -- arm commands --------------------------------------------------------

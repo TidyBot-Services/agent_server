@@ -309,6 +309,22 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <script>
 let serviceManagerEnabled = true;  // Replaced by server when disabled
 let serviceKeys = [];
+
+// API key support: extract from URL query params and include in all requests
+const _urlParams = new URLSearchParams(window.location.search);
+const _apiKey = _urlParams.get('api_key') || '';
+function authHeaders(extra) {
+  const h = extra || {};
+  if (_apiKey) h['X-API-Key'] = _apiKey;
+  return h;
+}
+function authFetch(url, opts) {
+  opts = opts || {};
+  opts.headers = authHeaders(opts.headers || {});
+  return _origFetch(url, opts);
+}
+const _origFetch = window.fetch.bind(window);
+window.fetch = authFetch;
 function fmt(s) {
   if (s == null) return "—";
   const h = Math.floor(s / 3600);
@@ -321,7 +337,7 @@ function fmt(s) {
 async function act(method, url, btn) {
   if (btn) btn.disabled = true;
   try {
-    await fetch(url, { method });
+    await authFetch(url, { method });
     await poll();
   } finally {
     if (btn) btn.disabled = false;
@@ -1354,7 +1370,7 @@ def create_router(service_mgr: ServiceManager | None, arm_monitor=None):
     """
     service_manager_enabled = service_mgr is not None
 
-    @router.get("/dashboard", response_class=HTMLResponse)
+    @router.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
     async def dashboard():
         """Web dashboard for service management."""
         # Inject the service_manager_enabled flag into the HTML
@@ -1364,19 +1380,19 @@ def create_router(service_mgr: ServiceManager | None, arm_monitor=None):
         )
         return html
 
-    @router.get("/config")
+    @router.get("/config", include_in_schema=False)
     async def get_config():
         """Get dashboard configuration (service manager status, etc.)."""
         return {"service_manager_enabled": service_manager_enabled}
 
     # Only add service management routes if service manager is enabled
     if service_mgr is not None:
-        @router.get("")
+        @router.get("", include_in_schema=False)
         async def list_services():
             """List all services with status, PID, uptime."""
             return service_mgr.get_status()
 
-        @router.post("/unlock/lock")
+        @router.post("/unlock/lock", include_in_schema=False)
         async def lock_robot():
             """Lock the robot by stopping the unlock service.
 
@@ -1391,7 +1407,7 @@ def create_router(service_mgr: ServiceManager | None, arm_monitor=None):
 
             return {"ok": True, "message": "Robot locked (unlock service stopped)"}
 
-        @router.get("/{name}")
+        @router.get("/{name}", include_in_schema=False)
         async def get_service(name: str):
             """Get status of a specific service."""
             result = service_mgr.get_status(name)
@@ -1399,7 +1415,7 @@ def create_router(service_mgr: ServiceManager | None, arm_monitor=None):
                 return {"ok": False, **result}
             return result
 
-        @router.post("/{name}/start")
+        @router.post("/{name}/start", include_in_schema=False)
         async def start_service(name: str):
             """Start a service."""
             result = await service_mgr.start_service(name)
@@ -1407,14 +1423,14 @@ def create_router(service_mgr: ServiceManager | None, arm_monitor=None):
                 arm_monitor.allow_recovery()
             return result
 
-        @router.post("/{name}/stop")
+        @router.post("/{name}/stop", include_in_schema=False)
         async def stop_service(name: str):
             """Stop a service."""
             if name == "franka_server" and arm_monitor is not None:
                 arm_monitor.suppress_recovery()
             return await service_mgr.stop_service(name)
 
-        @router.post("/{name}/restart")
+        @router.post("/{name}/restart", include_in_schema=False)
         async def restart_service(name: str):
             """Restart a service."""
             if name == "franka_server" and arm_monitor is not None:
@@ -1424,7 +1440,7 @@ def create_router(service_mgr: ServiceManager | None, arm_monitor=None):
                 arm_monitor.allow_recovery()
             return result
 
-        @router.get("/{name}/logs")
+        @router.get("/{name}/logs", include_in_schema=False)
         async def get_logs(name: str, lines: int = Query(default=50, ge=1, le=1000)):
             """Get recent log output for a service."""
             return service_mgr.get_logs(name, lines=lines)

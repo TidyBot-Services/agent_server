@@ -143,6 +143,16 @@ class SensorAPI:
         state = self._gripper.get_state()
         return state.get("object_detected", False)
 
+    def is_arm_holding(self) -> bool:
+        """Check if arm is in auto-hold mode (actively holding position).
+
+        Returns:
+            True if auto-hold is active (arm is holding position with impedance control).
+            False if arm is in gravity compensation or receiving external commands.
+        """
+        state = self._arm.get_state()
+        return state.get("auto_hold_active", False)
+
     def get_all_state(self) -> dict:
         """Get complete robot state.
 
