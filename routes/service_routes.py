@@ -1046,8 +1046,8 @@ async function pollCodeLogs() {
           <div style="color: #888; font-size: 11px;">${dur}s elapsed</div>
           <div style="color: #666; font-size: 10px; font-family: monospace; margin-top: 2px;">${status.execution_id || "..."}</div>
         </div>
-        <div style="min-width: 0; overflow-y: auto; max-height: 400px; font-family: monospace; font-size: 11px; line-height: 1.5;">${outHtml}</div>
-        <div style="min-width: 0; overflow-y: auto; max-height: 400px; font-size: 11px;">${codeHtml}</div>
+        <div data-running-output data-scroll-key="running-out" style="min-width: 0; overflow-y: auto; max-height: 400px; font-family: monospace; font-size: 11px; line-height: 1.5;">${outHtml}</div>
+        <div data-scroll-key="running-code" style="min-width: 0; overflow-y: auto; max-height: 400px; font-size: 11px;">${codeHtml}</div>
       </div>`;
     }
 
@@ -1164,13 +1164,31 @@ async function pollCodeLogs() {
         </div>
         <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; padding: 8px;">
           <div style="min-width: 0; font-size: 12px;">${infoCol}</div>
-          <div style="min-width: 0; font-family: monospace; font-size: 11px; line-height: 1.5; overflow-y: auto; max-height: 500px;">${outCol}</div>
-          <div style="min-width: 0; font-size: 11px; overflow-y: auto; max-height: 500px;">${codeCol}</div>
+          <div data-scroll-key="${execId}-out" style="min-width: 0; font-family: monospace; font-size: 11px; line-height: 1.5; overflow-y: auto; max-height: 500px;">${outCol}</div>
+          <div data-scroll-key="${execId}-code" style="min-width: 0; font-size: 11px; overflow-y: auto; max-height: 500px;">${codeCol}</div>
         </div>
       </div>`;
     }
 
+    // Save scroll positions of all scrollable elements before innerHTML wipe
+    const scrollState = {};
+    gridEl.querySelectorAll('[data-scroll-key]').forEach(el => {
+      if (el.scrollTop > 0) scrollState[el.dataset.scrollKey] = el.scrollTop;
+    });
+    const prevGridScroll = gridEl.scrollTop;
+
     gridEl.innerHTML = html;
+
+    // Restore grid container scroll
+    gridEl.scrollTop = prevGridScroll;
+    // Restore inner scrollable elements
+    gridEl.querySelectorAll('[data-scroll-key]').forEach(el => {
+      const saved = scrollState[el.dataset.scrollKey];
+      if (saved) el.scrollTop = saved;
+    });
+    // Auto-scroll running execution output to bottom (follow live output)
+    const runningOut = gridEl.querySelector('[data-running-output]');
+    if (runningOut) runningOut.scrollTop = runningOut.scrollHeight;
   } catch (e) {
     console.error("Code history poll error:", e);
   }
