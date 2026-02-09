@@ -26,8 +26,7 @@ def _lease_field_descriptions() -> dict[str, str]:
     """Human-readable descriptions for LeaseConfig fields."""
     return {
         "max_duration_s": "Maximum lease duration before automatic revocation",
-        "idle_timeout_s": "Seconds of inactivity before an idle warning is sent",
-        "warning_grace_s": "Seconds after warning before the lease is revoked",
+        "idle_timeout_s": "Seconds of inactivity before the lease is revoked",
         "reset_on_release": "Whether the robot auto-rewinds to start when the lease ends",
     }
 
@@ -59,8 +58,8 @@ def generate_guide() -> dict:
 
     lease_fields = {}
     for f in dataclasses.fields(lease_cfg):
-        if f.name == "check_interval_s":
-            continue  # internal implementation detail
+        if f.name in ("check_interval_s", "ticket_ttl_s"):
+            continue  # internal implementation details
         val = getattr(lease_cfg, f.name)
         lease_fields[f.name] = {
             "value": val,
@@ -112,7 +111,8 @@ def generate_guide() -> dict:
                 ),
                 "config": lease_fields,
                 "flow": [
-                    "Acquire a lease with POST /lease/acquire",
+                    "POST /lease/acquire — if free you get a lease immediately; if busy you get a ticket_id",
+                    "If queued, poll GET /lease/queue/{ticket_id} until status is 'granted'",
                     "Submit code or commands using the lease",
                     "Release with POST /lease/release (or let it expire)",
                     "Robot automatically rewinds to start position",
@@ -122,8 +122,20 @@ def generate_guide() -> dict:
                     {
                         "method": "POST",
                         "path": "/lease/acquire",
-                        "description": "Acquire control lease",
+                        "description": "Acquire or queue for control lease (never blocks)",
                         "body": '{"holder": "my-agent"}',
+                    },
+                    {
+                        "method": "GET",
+                        "path": "/lease/queue/{ticket_id}",
+                        "description": "Check ticket status and queue position",
+                        "body": None,
+                    },
+                    {
+                        "method": "DELETE",
+                        "path": "/lease/queue/{ticket_id}",
+                        "description": "Cancel ticket (leave queue)",
+                        "body": None,
                     },
                     {
                         "method": "POST",
@@ -144,6 +156,12 @@ def generate_guide() -> dict:
                         "body": None,
                     },
                 ],
+                "queue_note": (
+                    "POST /lease/acquire never blocks. If the robot is busy, you "
+                    "receive a ticket_id. Poll GET /lease/queue/{ticket_id} to "
+                    "check your position. When it's your turn, the response "
+                    "includes your lease_id."
+                ),
                 "auto_rewind_note": (
                     "When your lease ends, the robot automatically returns to its "
                     "starting position. You don't need to clean up."
@@ -232,6 +250,8 @@ def _render_markdown(guide: dict) -> str:
         md += f"{i}. {step}\n"
     md += "\n"
 
+    if "queue_note" in lease:
+        md += f"> {lease['queue_note']}\n\n"
     md += f"> {lease['auto_rewind_note']}\n\n"
 
     md += "### Endpoints\n\n"

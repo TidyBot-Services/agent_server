@@ -6,3 +6,6 @@ __pycache__/
 # Runtime files
 .agent_server_pids.json
 *.log
+
+# Secrets
+api_keys.json

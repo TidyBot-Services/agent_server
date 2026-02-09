@@ -280,12 +280,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 
-<!-- Row 4: Code Execution History (full width) -->
-<div style="margin-bottom: 24px;">
-  <div class="control-card">
-    <h3>Code Execution History</h3>
-    <div id="code-history" style="display: flex; flex-direction: column; gap: 6px; max-height: 500px; overflow-y: auto;"></div>
-  </div>
+<!-- Row 4: Code Execution (3-column: Submitted Code | Output | Status) -->
+<div class="control-card" style="margin-bottom: 24px;">
+  <h3>Code Execution <span id="code-status-badge" style="font-size: 11px; padding: 2px 8px; border-radius: 4px; display: none;"></span></h3>
+  <div id="code-execution-grid" style="max-height: 600px; overflow-y: auto; overflow-x: hidden;"></div>
 </div>
 
 <!-- Row 5: Logs (2 columns) -->
@@ -932,11 +930,48 @@ async function pollTrajectory() {
 window.addEventListener("load", initTrajectoryCanvas);
 window.addEventListener("resize", initTrajectoryCanvas);
 
-// Code execution history polling
+// Code execution polling — 3-column layout: Status | Output | Code
+// Track which rows are expanded (persists across re-renders)
+let _expandedRows = new Set();
+
+function escHtml(s) { return s ? s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") : ""; }
+
+// Lightweight Python syntax highlighter — single-pass tokenizer, VS Code dark colors
+// Note: triple-quoted strings not handled (would conflict with Python raw string delimiters)
+function highlightPy(raw) {
+  if (!raw) return "";
+  const e = s => s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  const re = /(f?"(?:[^"\\\n]|\\.)*"|f?'(?:[^'\\\n]|\\.)*'|#[^\n]*|@\w+|\b[a-zA-Z_]\w*\b|\b\d[\d_.]*(?:e[+-]?\d+)?\b)/g;
+  const kw = new Set("def,class,return,if,elif,else,for,while,in,not,and,or,is,with,as,try,except,finally,raise,import,from,pass,break,continue,yield,lambda,async,await,None,True,False,global,nonlocal,del,assert".split(","));
+  const bi = new Set("print,range,len,list,dict,tuple,set,int,float,str,bool,type,isinstance,enumerate,zip,map,filter,sorted,reversed,sum,min,max,abs,round,open,super,format,input,hex,oct,bin,chr,ord,repr,hash,id,dir,vars,next,iter,any,all,math,time,random".split(","));
+  let out = "", last = 0, m;
+  while ((m = re.exec(raw)) !== null) {
+    out += e(raw.slice(last, m.index));
+    last = m.index + m[0].length;
+    const t = m[0], et = e(t);
+    if (t[0]==="#") out += `<span style="color:#6a9955">${et}</span>`;
+    else if (t[0]==='"'||t[0]==="'"||t.startsWith("f'")||t.startsWith('f"')) out += `<span style="color:#ce9178">${et}</span>`;
+    else if (t[0]==="@") out += `<span style="color:#dcdcaa">${et}</span>`;
+    else if (kw.has(t)) out += `<span style="color:#c586c0">${et}</span>`;
+    else if (bi.has(t)) out += `<span style="color:#dcdcaa">${et}</span>`;
+    else if (/^\d/.test(t)) out += `<span style="color:#b5cea8">${et}</span>`;
+    else out += et;
+  }
+  out += e(raw.slice(last));
+  return out;
+}
+
+function toggleExecRow(execId) {
+  if (_expandedRows.has(execId)) _expandedRows.delete(execId);
+  else _expandedRows.add(execId);
+  // Re-render immediately so it feels instant
+  pollCodeLogs();
+}
+
 async function pollCodeLogs() {
   try {
-    const el = document.getElementById("code-history");
-    if (!el) return;
+    const gridEl = document.getElementById("code-execution-grid");
+    if (!gridEl) return;
 
     const [statusResp, histResp] = await Promise.all([
       fetch("/code/status"),
@@ -946,44 +981,77 @@ async function pollCodeLogs() {
     const histData = await histResp.json();
     const history = histData.history || [];
 
+    // Update header badge
+    const badgeEl = document.getElementById("code-status-badge");
+    if (badgeEl) {
+      if (status.is_running) {
+        badgeEl.style.display = "inline";
+        badgeEl.style.background = "#42a5f5";
+        badgeEl.style.color = "#fff";
+        badgeEl.style.animation = "pulse 1s infinite";
+        badgeEl.textContent = "RUNNING";
+      } else if (status.code) {
+        badgeEl.style.display = "inline";
+        badgeEl.style.animation = "none";
+        const s = status.status;
+        badgeEl.style.background = s === "completed" ? "#4caf50" : s === "failed" || s === "timeout" ? "#f85149" : s === "stopped" ? "#ff9800" : "#666";
+        badgeEl.style.color = "#fff";
+        badgeEl.textContent = s.toUpperCase();
+      } else {
+        badgeEl.style.display = "none";
+      }
+    }
+
     if (history.length === 0 && !status.is_running) {
-      el.innerHTML = '<span style="color: #666; font-size: 12px;">No code executed yet...</span>';
+      gridEl.innerHTML = '<span style="color: #666; font-size: 12px;">No code executed yet...</span>';
       return;
     }
 
     let html = "";
 
-    // Show running indicator at top if active (with live output)
+    // Column headers: Status | Output | Code
+    html += `<div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 6px; padding: 0 4px;">
+      <div style="color: #666; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;">Execution Info</div>
+      <div style="color: #666; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;">Output</div>
+      <div style="color: #666; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;">Submitted Code</div>
+    </div>`;
+
+    // Running execution row (always expanded)
     if (status.is_running) {
       const dur = status.duration?.toFixed(1) || "0";
-      let liveOut = "";
+      let codeHtml = '<span style="color: #666; font-style: italic; font-size: 11px;">No code</span>';
+      if (status.code) {
+        codeHtml = `<pre style="margin:0; font-family: 'SF Mono', Monaco, monospace; font-size: 11px; line-height: 1.5; color: #c9d1d9; white-space: pre-wrap; word-break: break-all;">${highlightPy(status.code)}</pre>`;
+      }
+      let outHtml = "";
       if (status.stdout) {
-        const lines = status.stdout.trim().split("\\n").filter(l => !l.startsWith("[SDK]") && l.trim());
-        const lastLines = lines.slice(-8);
-        for (const line of lastLines) {
-          liveOut += `<div style="color: #8b949e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${line.replace(/</g, "&lt;")}</div>`;
+        const lines = status.stdout.trim().split("\n").filter(l => !l.startsWith("[SDK]") && l.trim());
+        for (const line of lines.slice(-12)) {
+          outHtml += `<div style="color: #8b949e; white-space: pre-wrap; word-break: break-all;">${escHtml(line)}</div>`;
         }
       }
       if (status.stderr) {
-        const errLines = status.stderr.trim().split("\\n").filter(l => l.trim()).slice(-3);
+        const errLines = status.stderr.trim().split("\n").filter(l => l.trim()).slice(-3);
         for (const line of errLines) {
-          liveOut += `<div style="color: #f85149; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${line.replace(/</g, "&lt;")}</div>`;
+          outHtml += `<div style="color: #f85149; white-space: pre-wrap; word-break: break-all;">${escHtml(line)}</div>`;
         }
       }
-      html += `<div style="background: #1a2332; border: 1px solid #42a5f5; border-radius: 6px; padding: 8px 12px; font-size: 12px;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: ${liveOut ? "6" : "0"}px;">
-          <span style="color: #42a5f5; font-weight: 600;">Running...</span>
-          <div style="display: flex; align-items: center; gap: 8px; color: #666; font-size: 10px;">
-            <span>${dur}s</span>
-            <span>&middot;</span>
-            <span style="font-family: monospace;">${status.execution_id || "..."}</span>
+      if (!outHtml) outHtml = '<span style="color: #666; font-style: italic; font-size: 11px;">Waiting for output...</span>';
+
+      html += `<div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; border: 1px solid #42a5f5; border-radius: 6px; padding: 8px; margin-bottom: 6px; background: #1a2332; min-width: 0;">
+        <div style="min-width: 0; font-size: 12px;">
+          <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 4px;">
+            <span style="color: #42a5f5; font-weight: 700; font-size: 12px; padding: 1px 6px; background: #42a5f522; border-radius: 3px; animation: pulse 1s infinite;">RUNNING</span>
           </div>
+          <div style="color: #888; font-size: 11px;">${dur}s elapsed</div>
+          <div style="color: #666; font-size: 10px; font-family: monospace; margin-top: 2px;">${status.execution_id || "..."}</div>
         </div>
-        ${liveOut ? `<div style="font-family: monospace; font-size: 11px; line-height: 1.5; border-top: 1px solid #30363d; padding-top: 6px;">${liveOut}</div>` : ""}
+        <div style="min-width: 0; overflow-y: auto; max-height: 400px; font-family: monospace; font-size: 11px; line-height: 1.5;">${outHtml}</div>
+        <div style="min-width: 0; overflow-y: auto; max-height: 400px; font-size: 11px;">${codeHtml}</div>
       </div>`;
     }
 
-    // Show results as expandable rows
+    // History rows
     for (const r of history) {
       const ok = r.status === "completed";
       const isStopped = r.status === "stopped";
@@ -992,17 +1060,9 @@ async function pollCodeLogs() {
       const borderColor = ok ? "#2d5a2d" : isFailed ? "#5a2d2d" : isStopped ? "#5a3a2d" : isTimeout ? "#5a2d2d" : "#5a4a2d";
       const statusColor = ok ? "#4caf50" : isFailed ? "#f85149" : isStopped ? "#ff9800" : isTimeout ? "#f85149" : "#d29922";
 
-      // Status label with stop reason
       let statusLabel = ok ? "OK" : r.status.toUpperCase();
       if (isStopped && r.stop_reason) {
-        const reasonLabels = {
-          "manual": "STOPPED",
-          "arm_error": "ARM ERROR",
-          "idle_timeout": "IDLE TIMEOUT",
-          "max_duration": "MAX DURATION",
-          "queue_cleared": "QUEUE CLEARED",
-          "released": "RELEASED",
-        };
+        const reasonLabels = { "manual": "STOPPED", "arm_error": "ARM ERROR", "idle_timeout": "IDLE TIMEOUT", "max_duration": "MAX DURATION", "queue_cleared": "QUEUE CLEARED", "released": "RELEASED" };
         statusLabel = reasonLabels[r.stop_reason] || r.stop_reason.toUpperCase();
       }
 
@@ -1010,98 +1070,107 @@ async function pollCodeLogs() {
       const clientHost = r.client_host || "";
       const dur = r.duration?.toFixed(1) || "0";
       const execId = r.execution_id || "";
+      const expanded = _expandedRows.has(execId);
 
-      // Format timestamp
       let timeStr = "";
       if (r.started_at && r.started_at > 0) {
         const d = new Date(r.started_at * 1000);
         timeStr = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
       }
 
-      // Get stdout/stderr lines (skip SDK init lines)
-      let allStdout = "";
+      // Parse output lines (split by real newline, not literal \n)
       let outputLines = [];
-      if (r.stdout) {
-        allStdout = r.stdout;
-        outputLines = r.stdout.trim().split("\\n").filter(l => !l.startsWith("[SDK]") && l.trim());
-      }
-      let allStderr = "";
       let errLines = [];
-      if (r.stderr) {
-        allStderr = r.stderr;
-        errLines = r.stderr.trim().split("\\n").filter(l => l.trim());
-      }
+      if (r.stdout) outputLines = r.stdout.trim().split("\n").filter(l => !l.startsWith("[SDK]") && l.trim());
+      if (r.stderr) errLines = r.stderr.trim().split("\n").filter(l => l.trim());
 
-      // Preview: last 4 stdout lines + last 2 stderr lines
-      const previewOut = outputLines.slice(-4);
-      const previewErr = !ok ? errLines.slice(-3) : [];
-      const hasMore = outputLines.length > 4 || errLines.length > 3;
-      const detailId = "detail-" + execId;
-
-      html += `<div style="background: #161b22; border: 1px solid ${borderColor}; border-radius: 6px; padding: 10px 14px; font-size: 12px;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-            <span style="color: ${statusColor}; font-weight: 700; font-size: 12px; padding: 1px 6px; background: ${statusColor}22; border-radius: 3px;">${statusLabel}</span>
-            <span style="color: #e6edf3; font-weight: 600; font-size: 13px;">${holder.replace(/</g, "&lt;")}</span>
-            ${clientHost ? `<span style="color: #555; font-size: 11px;">${clientHost}</span>` : ""}
-          </div>
-          <div style="display: flex; align-items: center; gap: 8px; color: #666; font-size: 11px;">
-            ${timeStr ? `<span>${timeStr}</span><span>&middot;</span>` : ""}
-            <span>${dur}s</span>
-            <span>&middot;</span>
-            <span style="font-family: monospace;">${execId}</span>
-          </div>
-        </div>`;
-
-      // Show error message for stopped/failed/timeout
-      if (r.error && !ok) {
-        html += `<div style="color: ${statusColor}; font-size: 11px; margin-bottom: 4px; padding: 3px 6px; background: ${statusColor}11; border-radius: 3px;">${r.error.replace(/</g, "&lt;")}</div>`;
-      }
-
-      // Output preview
-      html += `<div style="font-family: monospace; font-size: 11px; line-height: 1.5;">`;
-
-      if (previewErr.length > 0) {
-        for (const line of previewErr) {
-          html += `<div style="color: #f85149; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${line.replace(/</g, "&lt;")}</div>`;
-        }
-      }
-      if (previewOut.length > 0) {
-        for (const line of previewOut) {
-          html += `<div style="color: #8b949e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${line.replace(/</g, "&lt;")}</div>`;
-        }
-      }
-
-      html += `</div>`;
-
-      // Expandable full output
-      if (hasMore || allStderr) {
-        html += `<details style="margin-top: 6px;">
-          <summary style="color: #58a6ff; font-size: 11px; cursor: pointer; user-select: none;">Show full output (${outputLines.length} lines${errLines.length > 0 ? ", " + errLines.length + " stderr" : ""})</summary>
-          <div style="margin-top: 6px; max-height: 300px; overflow-y: auto; background: #0d1117; border-radius: 4px; padding: 8px; border: 1px solid #30363d;">`;
-
+      // --- Collapsed: compact 1-line summary (Status | Output | Code ▼) ---
+      if (!expanded) {
+        // Output preview: last meaningful line
+        let outPrev = '<span style="color: #666; font-style: italic;">—</span>';
         if (errLines.length > 0) {
-          html += `<div style="color: #666; font-size: 10px; text-transform: uppercase; margin-bottom: 4px;">stderr:</div>`;
-          for (const line of errLines) {
-            html += `<div style="font-family: monospace; font-size: 11px; color: #f85149; white-space: pre-wrap; word-break: break-all;">${line.replace(/</g, "&lt;")}</div>`;
-          }
-          if (outputLines.length > 0) {
-            html += `<div style="border-top: 1px solid #30363d; margin: 6px 0;"></div>`;
-            html += `<div style="color: #666; font-size: 10px; text-transform: uppercase; margin-bottom: 4px;">stdout:</div>`;
-          }
+          const lastErr = errLines[errLines.length - 1];
+          outPrev = `<span style="color: #f85149;">${escHtml(lastErr.length > 80 ? lastErr.slice(0, 80) + "..." : lastErr)}</span>`;
+        } else if (outputLines.length > 0) {
+          const lastOut = outputLines[outputLines.length - 1];
+          outPrev = `<span style="color: #8b949e;">${escHtml(lastOut.length > 80 ? lastOut.slice(0, 80) + "..." : lastOut)}</span>`;
         }
 
-        for (const line of outputLines) {
-          html += `<div style="font-family: monospace; font-size: 11px; color: #8b949e; white-space: pre-wrap; word-break: break-all;">${line.replace(/</g, "&lt;")}</div>`;
+        // Code preview: first line or truncated
+        let codePrev = '<span style="color: #666; font-style: italic;">—</span>';
+        if (r.code) {
+          const firstLines = r.code.split("\n").filter(l => l.trim()).slice(0, 2).join("; ");
+          codePrev = `<span style="color: #c9d1d9; font-family: 'SF Mono', Monaco, monospace;">${escHtml(firstLines.length > 60 ? firstLines.slice(0, 60) + "..." : firstLines)}</span>`;
         }
 
-        html += `</div></details>`;
+        html += `<div onclick="toggleExecRow('${execId}')" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; border: 1px solid ${borderColor}; border-radius: 6px; padding: 6px 8px; margin-bottom: 4px; background: #161b22; min-width: 0; cursor: pointer; font-size: 11px; align-items: center;" title="Click to expand">
+          <div style="min-width: 0; display: flex; align-items: center; gap: 6px; flex-wrap: nowrap;">
+            <span style="color: #58a6ff; font-size: 10px;">&#9660;</span>
+            <span style="color: ${statusColor}; font-weight: 700; padding: 1px 5px; background: ${statusColor}22; border-radius: 3px; font-size: 11px;">${statusLabel}</span>
+            <span style="color: #888;">${escHtml(holder)}</span>
+            <span style="color: #666; font-size: 10px;">${dur}s</span>
+            ${timeStr ? `<span style="color: #555; font-size: 10px;">${timeStr}</span>` : ""}
+          </div>
+          <div style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace;">${outPrev}</div>
+          <div style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${codePrev}</div>
+        </div>`;
+        continue;
       }
 
-      html += `</div>`;
+      // --- Expanded: full 3-column view (▲ Status | Output | Code) ---
+      // Info column
+      let infoCol = `<div style="display: flex; align-items: center; gap: 6px; margin-bottom: 4px; flex-wrap: wrap;">
+        <span style="color: ${statusColor}; font-weight: 700; font-size: 12px; padding: 1px 6px; background: ${statusColor}22; border-radius: 3px;">${statusLabel}</span>
+        <span style="color: #e6edf3; font-weight: 600; font-size: 12px;">${escHtml(holder)}</span>
+      </div>`;
+      if (r.error && !ok) {
+        infoCol += `<div style="color: ${statusColor}; font-size: 10px; margin-bottom: 3px; padding: 2px 4px; background: ${statusColor}11; border-radius: 3px; word-break: break-word;">${escHtml(r.error)}</div>`;
+      }
+      infoCol += `<div style="color: #888; font-size: 11px;">${dur}s${timeStr ? " &middot; " + timeStr : ""}</div>`;
+      if (clientHost) infoCol += `<div style="color: #555; font-size: 10px;">${escHtml(clientHost)}</div>`;
+      infoCol += `<div style="color: #666; font-size: 10px; font-family: monospace; margin-top: 2px;">${execId}</div>`;
+
+      // Output column
+      let outCol = "";
+      if (errLines.length > 0) {
+        outCol += `<div style="color: #666; font-size: 10px; text-transform: uppercase; margin-bottom: 2px;">stderr:</div>`;
+        for (const line of errLines) {
+          outCol += `<div style="color: #f85149; white-space: pre-wrap; word-break: break-all;">${escHtml(line)}</div>`;
+        }
+      }
+      if (outputLines.length > 0) {
+        if (errLines.length > 0) outCol += `<div style="border-top: 1px solid #30363d; margin: 4px 0;"></div>`;
+        outCol += `<div style="color: #666; font-size: 10px; text-transform: uppercase; margin-bottom: 2px;">stdout:</div>`;
+        for (const line of outputLines) {
+          outCol += `<div style="color: #8b949e; white-space: pre-wrap; word-break: break-all;">${escHtml(line)}</div>`;
+        }
+      }
+      if (!outCol) outCol = '<span style="color: #666; font-style: italic; font-size: 11px;">No output</span>';
+
+      // Code column
+      let codeCol = '<span style="color: #666; font-style: italic; font-size: 11px;">No code captured</span>';
+      if (r.code) {
+        codeCol = `<pre style="margin:0; font-family: 'SF Mono', Monaco, monospace; font-size: 11px; line-height: 1.5; color: #c9d1d9; white-space: pre-wrap; word-break: break-all;">${highlightPy(r.code)}</pre>`;
+      }
+
+      html += `<div style="border: 1px solid ${borderColor}; border-radius: 6px; margin-bottom: 4px; background: #161b22; min-width: 0;">
+        <div onclick="toggleExecRow('${execId}')" style="padding: 6px 8px; cursor: pointer; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid ${borderColor};">
+          <span style="color: #58a6ff; font-size: 10px;">&#9650;</span>
+          <span style="color: ${statusColor}; font-weight: 700; font-size: 11px; padding: 1px 5px; background: ${statusColor}22; border-radius: 3px;">${statusLabel}</span>
+          <span style="color: #888; font-size: 11px;">${escHtml(holder)}</span>
+          <span style="color: #666; font-size: 10px;">${dur}s</span>
+          ${timeStr ? `<span style="color: #555; font-size: 10px;">${timeStr}</span>` : ""}
+          <span style="color: #555; font-size: 10px; font-family: monospace; margin-left: auto;">${execId}</span>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; padding: 8px;">
+          <div style="min-width: 0; font-size: 12px;">${infoCol}</div>
+          <div style="min-width: 0; font-family: monospace; font-size: 11px; line-height: 1.5; overflow-y: auto; max-height: 500px;">${outCol}</div>
+          <div style="min-width: 0; font-size: 11px; overflow-y: auto; max-height: 500px;">${codeCol}</div>
+        </div>
+      </div>`;
     }
 
-    el.innerHTML = html;
+    gridEl.innerHTML = html;
   } catch (e) {
     console.error("Code history poll error:", e);
   }
@@ -1354,7 +1423,7 @@ def create_router(service_mgr: ServiceManager | None, arm_monitor=None):
     """
     service_manager_enabled = service_mgr is not None
 
-    @router.get("/dashboard", response_class=HTMLResponse)
+    @router.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
     async def dashboard():
         """Web dashboard for service management."""
         # Inject the service_manager_enabled flag into the HTML
@@ -1364,19 +1433,19 @@ def create_router(service_mgr: ServiceManager | None, arm_monitor=None):
         )
         return html
 
-    @router.get("/config")
+    @router.get("/config", include_in_schema=False)
     async def get_config():
         """Get dashboard configuration (service manager status, etc.)."""
         return {"service_manager_enabled": service_manager_enabled}
 
     # Only add service management routes if service manager is enabled
     if service_mgr is not None:
-        @router.get("")
+        @router.get("", include_in_schema=False)
         async def list_services():
             """List all services with status, PID, uptime."""
             return service_mgr.get_status()
 
-        @router.post("/unlock/lock")
+        @router.post("/unlock/lock", include_in_schema=False)
         async def lock_robot():
             """Lock the robot by stopping the unlock service.
 
@@ -1391,7 +1460,7 @@ def create_router(service_mgr: ServiceManager | None, arm_monitor=None):
 
             return {"ok": True, "message": "Robot locked (unlock service stopped)"}
 
-        @router.get("/{name}")
+        @router.get("/{name}", include_in_schema=False)
         async def get_service(name: str):
             """Get status of a specific service."""
             result = service_mgr.get_status(name)
@@ -1399,7 +1468,7 @@ def create_router(service_mgr: ServiceManager | None, arm_monitor=None):
                 return {"ok": False, **result}
             return result
 
-        @router.post("/{name}/start")
+        @router.post("/{name}/start", include_in_schema=False)
         async def start_service(name: str):
             """Start a service."""
             result = await service_mgr.start_service(name)
@@ -1407,14 +1476,14 @@ def create_router(service_mgr: ServiceManager | None, arm_monitor=None):
                 arm_monitor.allow_recovery()
             return result
 
-        @router.post("/{name}/stop")
+        @router.post("/{name}/stop", include_in_schema=False)
         async def stop_service(name: str):
             """Stop a service."""
             if name == "franka_server" and arm_monitor is not None:
                 arm_monitor.suppress_recovery()
             return await service_mgr.stop_service(name)
 
-        @router.post("/{name}/restart")
+        @router.post("/{name}/restart", include_in_schema=False)
         async def restart_service(name: str):
             """Restart a service."""
             if name == "franka_server" and arm_monitor is not None:
@@ -1424,7 +1493,7 @@ def create_router(service_mgr: ServiceManager | None, arm_monitor=None):
                 arm_monitor.allow_recovery()
             return result
 
-        @router.get("/{name}/logs")
+        @router.get("/{name}/logs", include_in_schema=False)
         async def get_logs(name: str, lines: int = Query(default=50, ge=1, le=1000)):
             """Get recent log output for a service."""
             return service_mgr.get_logs(name, lines=lines)

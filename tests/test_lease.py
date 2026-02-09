@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test lease manager functionality."""
+"""Test lease manager — non-blocking ticket queue."""
 
 import asyncio
 import sys
@@ -7,137 +7,317 @@ from lease import LeaseManager
 from config import LeaseConfig
 
 
-async def test_lease_status_visibility():
-    """Test that queue is visible and lease_id is hidden in status."""
-    print("=" * 60)
-    print("TEST: Lease Status Visibility")
-    print("=" * 60)
-
-    # Create lease manager with short timeouts for testing
-    config = LeaseConfig(
-        idle_timeout_s=5.0,
-        warning_grace_s=2.0,
-        max_duration_s=30.0,
-        check_interval_s=1.0,
-    )
-
-    def last_moved_at():
-        return 0.0
-
-    lease_mgr = LeaseManager(config, last_moved_at)
-    await lease_mgr.start()
-
+async def test_immediate_grant():
+    """When no one holds the lease, acquire grants immediately."""
+    print("\n[Test 1] Immediate grant when lease is free")
+    config = LeaseConfig(idle_timeout_s=5.0, max_duration_s=30.0,
+                         check_interval_s=1.0, reset_on_release=False)
+    mgr = LeaseManager(config, lambda: 0.0)
+    await mgr.start()
     try:
-        # Test 1: Empty status
-        print("\n[Test 1] Initial status (no holder):")
-        status = lease_mgr.status()
-        print(f"  Status: {status}")
-        assert status["holder"] is None
-        assert status["queue_length"] == 0
-        assert status["queue"] == []
-        assert "lease_id" not in status, "❌ lease_id should NOT be in empty status"
-        print("  ✓ Empty status correct")
-
-        # Test 2: Acquire lease
-        print("\n[Test 2] Acquire lease (alice):")
-        result = await lease_mgr.acquire("alice")
-        print(f"  Acquire result: {result}")
+        result = await mgr.acquire("alice")
         assert result["status"] == "granted"
-        assert "lease_id" in result, "❌ lease_id should be in acquire response"
-        alice_lease_id = result["lease_id"]
-        print(f"  ✓ Alice got lease: {alice_lease_id}")
-
-        # Test 3: Status with current holder
-        print("\n[Test 3] Status with current holder:")
-        status = lease_mgr.status()
-        print(f"  Status: {status}")
-        assert status["holder"] == "alice"
-        assert status["queue_length"] == 0
-        assert status["queue"] == []
-        assert "lease_id" not in status, "❌ lease_id should NOT be in public status!"
-        print("  ✓ Status hides lease_id (security fix works!)")
-
-        # Test 4: Queue multiple holders
-        print("\n[Test 4] Queue multiple holders:")
-        # Start acquire tasks that will block
-        bob_task = asyncio.create_task(lease_mgr.acquire("bob"))
-        await asyncio.sleep(0.1)  # Let bob enter queue
-
-        charlie_task = asyncio.create_task(lease_mgr.acquire("charlie"))
-        await asyncio.sleep(0.1)  # Let charlie enter queue
-
-        status = lease_mgr.status()
-        print(f"  Status: {status}")
-        assert status["holder"] == "alice"
-        assert status["queue_length"] == 2
-        assert len(status["queue"]) == 2
-        assert status["queue"][0] == {"position": 1, "holder": "bob"}
-        assert status["queue"][1] == {"position": 2, "holder": "charlie"}
-        assert "lease_id" not in status
-        print("  ✓ Queue visible with positions")
-
-        # Test 5: Re-acquire (get lease_id reminder)
-        print("\n[Test 5] Re-acquire existing lease:")
-        result = await lease_mgr.acquire("alice")
-        print(f"  Re-acquire result: {result}")
-        assert result["status"] == "already_held"
-        assert result["lease_id"] == alice_lease_id
-        print("  ✓ Holder can re-acquire to get lease_id reminder")
-
-        # Test 6: Release and queue progression
-        print("\n[Test 6] Release and queue progression:")
-        release_result = await lease_mgr.release(alice_lease_id)
-        print(f"  Release result: {release_result}")
-        assert release_result["status"] == "released"
-
-        # Wait for bob to get the lease
-        bob_result = await asyncio.wait_for(bob_task, timeout=1.0)
-        print(f"  Bob's result: {bob_result}")
-        assert bob_result["status"] == "granted"
-        assert "lease_id" in bob_result
-
-        status = lease_mgr.status()
-        print(f"  Status after release: {status}")
-        assert status["holder"] == "bob"
-        assert status["queue_length"] == 1
-        assert status["queue"][0] == {"position": 1, "holder": "charlie"}
-        assert "lease_id" not in status
-        print("  ✓ Queue progresses correctly")
-
-        # Clean up
-        charlie_task.cancel()
-        try:
-            await charlie_task
-        except asyncio.CancelledError:
-            pass
-
-        print("\n" + "=" * 60)
-        print("ALL TESTS PASSED ✓")
-        print("=" * 60)
-        print("\nSummary:")
-        print("  ✓ lease_id hidden from public status endpoint")
-        print("  ✓ Queue shows holder names and positions")
-        print("  ✓ Holders can re-acquire to get their lease_id")
-        print("  ✓ Queue progression works correctly")
-
+        assert "lease_id" in result
+        print(f"  result: {result}")
+        print("  PASS")
     finally:
-        await lease_mgr.stop()
+        await mgr.stop()
+
+
+async def test_queued_ticket():
+    """When lease is held, acquire returns a ticket immediately (non-blocking)."""
+    print("\n[Test 2] Queued ticket (non-blocking)")
+    config = LeaseConfig(idle_timeout_s=5.0, max_duration_s=30.0,
+                         check_interval_s=1.0, reset_on_release=False)
+    mgr = LeaseManager(config, lambda: 0.0)
+    await mgr.start()
+    try:
+        # Alice gets the lease
+        alice = await mgr.acquire("alice")
+        assert alice["status"] == "granted"
+
+        # Bob gets queued — returns immediately, no blocking
+        bob = await mgr.acquire("bob")
+        assert bob["status"] == "queued"
+        assert "ticket_id" in bob
+        assert bob["position"] == 1
+        assert bob["queue_length"] == 1
+        print(f"  bob queued: {bob}")
+
+        # Charlie gets queued at position 2
+        charlie = await mgr.acquire("charlie")
+        assert charlie["status"] == "queued"
+        assert charlie["position"] == 2
+        assert charlie["queue_length"] == 2
+        print(f"  charlie queued: {charlie}")
+        print("  PASS")
+    finally:
+        await mgr.stop()
+
+
+async def test_check_ticket():
+    """Poll ticket status — waiting then granted after release."""
+    print("\n[Test 3] Check ticket (poll for grant)")
+    config = LeaseConfig(idle_timeout_s=5.0, max_duration_s=30.0,
+                         check_interval_s=1.0, reset_on_release=False)
+    mgr = LeaseManager(config, lambda: 0.0)
+    await mgr.start()
+    try:
+        alice = await mgr.acquire("alice")
+        bob = await mgr.acquire("bob")
+        ticket_id = bob["ticket_id"]
+
+        # Check — should be waiting
+        status = mgr.check_ticket(ticket_id)
+        assert status["status"] == "waiting"
+        assert status["position"] == 1
+        print(f"  before release: {status}")
+
+        # Release alice → bob auto-granted
+        await mgr.release(alice["lease_id"])
+
+        # Check — should be granted now
+        status = mgr.check_ticket(ticket_id)
+        assert status["status"] == "granted"
+        assert "lease_id" in status
+        print(f"  after release: {status}")
+        print("  PASS")
+    finally:
+        await mgr.stop()
+
+
+async def test_idempotent_acquire():
+    """Same holder calling acquire twice returns the same ticket."""
+    print("\n[Test 4] Idempotent re-acquire")
+    config = LeaseConfig(idle_timeout_s=5.0, max_duration_s=30.0,
+                         check_interval_s=1.0, reset_on_release=False)
+    mgr = LeaseManager(config, lambda: 0.0)
+    await mgr.start()
+    try:
+        await mgr.acquire("alice")
+        bob1 = await mgr.acquire("bob")
+        bob2 = await mgr.acquire("bob")
+        assert bob1["ticket_id"] == bob2["ticket_id"]
+        assert bob2["status"] == "queued"
+        print(f"  same ticket: {bob1['ticket_id']}")
+        print("  PASS")
+    finally:
+        await mgr.stop()
+
+
+async def test_cancel_ticket():
+    """Cancel a waiting ticket removes from queue."""
+    print("\n[Test 5] Cancel ticket")
+    config = LeaseConfig(idle_timeout_s=5.0, max_duration_s=30.0,
+                         check_interval_s=1.0, reset_on_release=False)
+    mgr = LeaseManager(config, lambda: 0.0)
+    await mgr.start()
+    try:
+        await mgr.acquire("alice")
+        bob = await mgr.acquire("bob")
+        charlie = await mgr.acquire("charlie")
+
+        # Cancel bob
+        result = mgr.cancel_ticket(bob["ticket_id"])
+        assert result["status"] == "cancelled"
+        print(f"  cancel result: {result}")
+
+        # Charlie should now be position 1
+        status = mgr.check_ticket(charlie["ticket_id"])
+        assert status["position"] == 1
+        print(f"  charlie after cancel: {status}")
+
+        # Queue length should be 1
+        lease_status = mgr.status()
+        assert lease_status["queue_length"] == 1
+        print("  PASS")
+    finally:
+        await mgr.stop()
+
+
+async def test_cancel_granted_ticket():
+    """Cancelling an already-granted ticket returns an error."""
+    print("\n[Test 6] Cancel granted ticket → error")
+    config = LeaseConfig(idle_timeout_s=5.0, max_duration_s=30.0,
+                         check_interval_s=1.0, reset_on_release=False)
+    mgr = LeaseManager(config, lambda: 0.0)
+    await mgr.start()
+    try:
+        alice = await mgr.acquire("alice")
+        bob = await mgr.acquire("bob")
+        await mgr.release(alice["lease_id"])
+
+        # Bob's ticket is now granted
+        result = mgr.cancel_ticket(bob["ticket_id"])
+        assert result["status"] == "error"
+        assert "release" in result["message"].lower()
+        print(f"  cancel granted: {result}")
+        print("  PASS")
+    finally:
+        await mgr.stop()
+
+
+async def test_check_not_found():
+    """Checking a nonexistent ticket returns not_found."""
+    print("\n[Test 7] Check nonexistent ticket")
+    config = LeaseConfig(idle_timeout_s=5.0, max_duration_s=30.0,
+                         check_interval_s=1.0, reset_on_release=False)
+    mgr = LeaseManager(config, lambda: 0.0)
+    await mgr.start()
+    try:
+        result = mgr.check_ticket("bogus-id")
+        assert result["status"] == "not_found"
+        print(f"  result: {result}")
+        print("  PASS")
+    finally:
+        await mgr.stop()
+
+
+async def test_clear_queue():
+    """clear_queue cancels all tickets and revokes lease."""
+    print("\n[Test 8] Clear queue")
+    config = LeaseConfig(idle_timeout_s=5.0, max_duration_s=30.0,
+                         check_interval_s=1.0, reset_on_release=False)
+    mgr = LeaseManager(config, lambda: 0.0)
+    await mgr.start()
+    try:
+        await mgr.acquire("alice")
+        bob = await mgr.acquire("bob")
+        charlie = await mgr.acquire("charlie")
+
+        result = await mgr.clear_queue()
+        assert result["status"] == "cleared"
+        assert result["removed"] == 2
+        assert result["lease_revoked"] is True
+        print(f"  clear result: {result}")
+
+        # Tickets should be cancelled
+        bob_status = mgr.check_ticket(bob["ticket_id"])
+        assert bob_status["status"] == "cancelled"
+        charlie_status = mgr.check_ticket(charlie["ticket_id"])
+        assert charlie_status["status"] == "cancelled"
+        print("  PASS")
+    finally:
+        await mgr.stop()
+
+
+async def test_status_includes_ticket_ids():
+    """Status endpoint includes ticket_id in queue entries."""
+    print("\n[Test 9] Status includes ticket IDs")
+    config = LeaseConfig(idle_timeout_s=5.0, max_duration_s=30.0,
+                         check_interval_s=1.0, reset_on_release=False)
+    mgr = LeaseManager(config, lambda: 0.0)
+    await mgr.start()
+    try:
+        await mgr.acquire("alice")
+        bob = await mgr.acquire("bob")
+
+        status = mgr.status()
+        assert status["holder"] == "alice"
+        assert status["queue_length"] == 1
+        assert status["queue"][0]["holder"] == "bob"
+        assert status["queue"][0]["ticket_id"] == bob["ticket_id"]
+        assert status["queue"][0]["position"] == 1
+        assert "lease_id" not in status  # security: lease_id not in public status
+        print(f"  status: {status}")
+        print("  PASS")
+    finally:
+        await mgr.stop()
+
+
+async def test_already_held():
+    """Current holder calling acquire gets already_held with their lease_id."""
+    print("\n[Test 10] Already held")
+    config = LeaseConfig(idle_timeout_s=5.0, max_duration_s=30.0,
+                         check_interval_s=1.0, reset_on_release=False)
+    mgr = LeaseManager(config, lambda: 0.0)
+    await mgr.start()
+    try:
+        alice = await mgr.acquire("alice")
+        again = await mgr.acquire("alice")
+        assert again["status"] == "already_held"
+        assert again["lease_id"] == alice["lease_id"]
+        print(f"  result: {again}")
+        print("  PASS")
+    finally:
+        await mgr.stop()
+
+
+async def test_queue_progression():
+    """Multiple holders get granted in order as leases are released."""
+    print("\n[Test 11] Queue progression")
+    config = LeaseConfig(idle_timeout_s=5.0, max_duration_s=30.0,
+                         check_interval_s=1.0, reset_on_release=False)
+    mgr = LeaseManager(config, lambda: 0.0)
+    await mgr.start()
+    try:
+        alice = await mgr.acquire("alice")
+        bob = await mgr.acquire("bob")
+        charlie = await mgr.acquire("charlie")
+
+        # Release alice → bob gets granted
+        await mgr.release(alice["lease_id"])
+        bob_status = mgr.check_ticket(bob["ticket_id"])
+        assert bob_status["status"] == "granted"
+        bob_lease_id = bob_status["lease_id"]
+        print(f"  bob granted: {bob_status}")
+
+        # Charlie still waiting at position 1 now
+        charlie_status = mgr.check_ticket(charlie["ticket_id"])
+        assert charlie_status["status"] == "waiting"
+        assert charlie_status["position"] == 1
+        print(f"  charlie waiting: {charlie_status}")
+
+        # Release bob → charlie gets granted
+        await mgr.release(bob_lease_id)
+        charlie_status = mgr.check_ticket(charlie["ticket_id"])
+        assert charlie_status["status"] == "granted"
+        print(f"  charlie granted: {charlie_status}")
+        print("  PASS")
+    finally:
+        await mgr.stop()
 
 
 async def main():
-    try:
-        await test_lease_status_visibility()
-        return 0
-    except AssertionError as e:
-        print(f"\n❌ TEST FAILED: {e}")
-        import traceback
-        traceback.print_exc()
-        return 1
-    except Exception as e:
-        print(f"\n❌ ERROR: {e}")
-        import traceback
-        traceback.print_exc()
-        return 1
+    tests = [
+        test_immediate_grant,
+        test_queued_ticket,
+        test_check_ticket,
+        test_idempotent_acquire,
+        test_cancel_ticket,
+        test_cancel_granted_ticket,
+        test_check_not_found,
+        test_clear_queue,
+        test_status_includes_ticket_ids,
+        test_already_held,
+        test_queue_progression,
+    ]
+
+    print("=" * 60)
+    print("Lease Manager Tests — Non-Blocking Ticket Queue")
+    print("=" * 60)
+
+    passed = 0
+    failed = 0
+    for test in tests:
+        try:
+            await test()
+            passed += 1
+        except AssertionError as e:
+            print(f"  FAIL: {e}")
+            import traceback
+            traceback.print_exc()
+            failed += 1
+        except Exception as e:
+            print(f"  ERROR: {e}")
+            import traceback
+            traceback.print_exc()
+            failed += 1
+
+    print("\n" + "=" * 60)
+    print(f"Results: {passed} passed, {failed} failed")
+    print("=" * 60)
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

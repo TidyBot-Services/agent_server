@@ -40,11 +40,18 @@ class BaseAPI:
         "global" frame = world coordinates.
     """
 
-    def __init__(self, backend: BaseBackend) -> None:
+    def __init__(
+        self,
+        backend: BaseBackend,
+        *,
+        timeout: float = 30.0,
+        position_tolerance_m: float = 0.05,
+        angle_tolerance_rad: float = 0.05,
+    ) -> None:
         self._backend = backend
-        self._timeout = 30.0  # Default timeout for blocking operations
-        self._position_tolerance = 0.05  # 5cm position tolerance
-        self._angle_tolerance = 0.05  # ~3 degree angle tolerance
+        self._timeout = timeout
+        self._position_tolerance = position_tolerance_m
+        self._angle_tolerance = angle_tolerance_rad
 
     def move_to_pose(
         self,
@@ -168,6 +175,46 @@ class BaseAPI:
             timeout: Optional timeout in seconds (default: 30s)
         """
         self.rotate(math.radians(degrees), timeout=timeout)
+
+    def send_velocity(
+        self,
+        vx: float = 0.0,
+        vy: float = 0.0,
+        wz: float = 0.0,
+        frame: str = "global",
+        duration: float = 1.0,
+    ) -> None:
+        """Send velocity command for specified duration (blocking).
+
+        Streams the velocity command at 10 Hz for the given duration,
+        then stops the base.
+
+        Args:
+            vx: Linear velocity in x (m/s)
+            vy: Linear velocity in y (m/s)
+            wz: Angular velocity around z (rad/s)
+            frame: "global" (default) or "local" (robot frame)
+            duration: How long to send the velocity in seconds (default: 1.0)
+
+        Raises:
+            BaseError: If command fails
+
+        Example:
+            base.send_velocity(vx=0.1, duration=2.0)  # move forward for 2 seconds
+            base.send_velocity(wz=0.5, duration=1.0)   # rotate for 1 second
+        """
+        try:
+            start_time = time.time()
+            while time.time() - start_time < duration:
+                self._backend.set_target_velocity(vx, vy, wz, frame)
+                time.sleep(0.1)  # 10 Hz
+        except BaseBackendError as e:
+            raise BaseError(f"Failed to send velocity command: {e}") from e
+        finally:
+            try:
+                self._backend.stop()
+            except BaseBackendError:
+                pass
 
     def get_state(self) -> dict:
         """Get current base state.

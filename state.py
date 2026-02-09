@@ -191,7 +191,7 @@ class StateAggregator:
                     try:
                         base_state = await loop.run_in_executor(None, self._base.get_state)
                     except Exception as e:
-                        logger.debug("Base state poll failed: %s", e)
+                        logger.warning("Base state poll failed: %s (%s)", e, type(e).__name__)
 
                 if self._franka.is_connected:
                     try:
@@ -225,6 +225,9 @@ class StateAggregator:
                         "ee_pose_world": world_ee_pose,
                         "ee_wrench": franka_state.get("ee_wrench", []),
                         "mode": franka_state.get("control_mode", 0),
+                        "auto_hold_active": franka_state.get("auto_hold_active", False),
+                        "q_target": franka_state.get("q_target", []),
+                        "pose_target": franka_state.get("pose_target", []),
                     },
                     "gripper": {
                         "position": gripper_state.get("position", 0),

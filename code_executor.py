@@ -8,15 +8,49 @@ import logging
 import os
 import signal
 import subprocess
-import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from config import TIMING
+
 logger = logging.getLogger(__name__)
+
+# Directory for code execution logs and saved scripts
+_LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
+_CODE_DIR = _LOG_DIR / "code_executions"
+
+# Dedicated logger for code execution output (stdout/stderr)
+_exec_logger: Optional[logging.Logger] = None
+
+
+def _get_exec_logger() -> logging.Logger:
+    """Get or create the dedicated code execution output logger."""
+    global _exec_logger
+    if _exec_logger is not None:
+        return _exec_logger
+
+    _CODE_DIR.mkdir(parents=True, exist_ok=True)
+
+    _exec_logger = logging.getLogger("code_execution_output")
+    _exec_logger.setLevel(logging.INFO)
+    _exec_logger.propagate = False  # Don't send to root logger / agent_server.log
+
+    fh = TimedRotatingFileHandler(
+        str(_LOG_DIR / "code_execution.log"),
+        when="midnight",
+        backupCount=30,
+    )
+    fh.suffix = "%Y-%m-%d"
+    fh.setFormatter(logging.Formatter("%(message)s"))
+    _exec_logger.addHandler(fh)
+
+    return _exec_logger
 
 
 class ExecutionStatus(str, Enum):
@@ -43,6 +77,7 @@ class ExecutionResult:
     client_host: str = ""
     stop_reason: str = ""
     started_at: float = 0.0
+    code: str = ""
 
 
 @dataclass
@@ -273,7 +308,7 @@ class CodeExecutor:
         self._start_time: Optional[float] = None
         self._last_result: Optional[ExecutionResult] = None
         self._history: List[ExecutionResult] = []  # Last N results
-        self._temp_files: list[Path] = []
+        self._current_code: Optional[str] = None  # User code (without wrapper)
         # Incremental output capture (thread-safe)
         self._stdout_lines: List[str] = []
         self._stderr_lines: List[str] = []
@@ -338,11 +373,32 @@ class CodeExecutor:
         with self._output_lock:
             return "".join(self._stdout_lines), "".join(self._stderr_lines)
 
+    def _log_execution_output(self, result: ExecutionResult) -> None:
+        """Write execution stdout/stderr to the dedicated code_execution.log."""
+        log = _get_exec_logger()
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        header = (
+            f"{'=' * 72}\n"
+            f"[{timestamp}] Execution {result.execution_id} "
+            f"| status={result.status.value} exit_code={result.exit_code} "
+            f"duration={result.duration:.2f}s"
+            f"{f' holder={result.holder}' if result.holder else ''}\n"
+            f"{'=' * 72}"
+        )
+        log.info(header)
+        if result.stdout:
+            log.info(f"--- stdout ---\n{result.stdout.rstrip()}")
+        if result.stderr:
+            log.info(f"--- stderr ---\n{result.stderr.rstrip()}")
+        if not result.stdout and not result.stderr:
+            log.info("(no output)")
+        log.info("")
+
     async def execute(
         self,
         code: str,
         execution_id: str,
-        timeout: float = 300.0,
+        timeout: float = TIMING.code_execution_timeout_s,
         lease_id: Optional[str] = None,
         server_url: str = "http://localhost:8080",
         holder: str = "",
@@ -373,12 +429,15 @@ class CodeExecutor:
         self._server_url = server_url
         self._holder = holder
         self._client_host = client_host
+        self._current_code = code
 
-        # Create temporary Python file with submitted code
+        # Save code to logs/code_executions/ directory
         temp_file = self._create_temp_file(code)
-        self._temp_files.append(temp_file)
 
         logger.info(f"Executing code (ID: {execution_id}): {temp_file}")
+
+        # Clean up old code files (keep last 50)
+        self.cleanup_old_code_files()
 
         # Reset output accumulators
         with self._output_lock:
@@ -432,6 +491,7 @@ class CodeExecutor:
                     error=f"Execution timed out after {timeout}s",
                     stop_reason="timeout",
                     started_at=self._start_time,
+                    code=code,
                 )
             else:
                 # Process exited normally - wait for readers to finish
@@ -456,6 +516,7 @@ class CodeExecutor:
                     duration=duration,
                     error=error,
                     started_at=self._start_time,
+                    code=code,
                 )
 
         except Exception as e:
@@ -470,6 +531,7 @@ class CodeExecutor:
                 duration=duration,
                 error=f"Failed to execute code: {e}",
                 started_at=self._start_time or 0.0,
+                code=code,
             )
 
         finally:
@@ -492,6 +554,7 @@ class CodeExecutor:
             f"Execution {execution_id} finished: {result.status} "
             f"(duration: {result.duration:.2f}s, exit_code: {result.exit_code})"
         )
+        self._log_execution_output(result)
 
         return result
 
@@ -554,10 +617,17 @@ class CodeExecutor:
             error=error_msg,
             stop_reason=reason,
             started_at=self._start_time or 0.0,
+            code=self._current_code or "",
         )
 
         self._process = None
+        self._log_execution_output(self._last_result)
         return True
+
+    @property
+    def current_code(self) -> Optional[str]:
+        """Get the user code from the current or last execution (without wrapper)."""
+        return self._current_code
 
     def get_last_result(self) -> Optional[ExecutionResult]:
         """Get result from last execution."""
@@ -567,14 +637,18 @@ class CodeExecutor:
         """Get last N execution results (newest first)."""
         return list(reversed(self._history[-count:]))
 
-    def cleanup_temp_files(self) -> None:
-        """Remove temporary code files."""
-        for temp_file in self._temp_files:
-            try:
-                temp_file.unlink()
-            except Exception as e:
-                logger.warning(f"Failed to delete temp file {temp_file}: {e}")
-        self._temp_files.clear()
+    def cleanup_old_code_files(self, keep: int = 50) -> None:
+        """Remove old code files, keeping the most recent ones.
+
+        Args:
+            keep: Number of most recent files to keep (default 50).
+        """
+        try:
+            files = sorted(_CODE_DIR.glob("*.py"), key=lambda f: f.stat().st_mtime)
+            for old_file in files[:-keep] if len(files) > keep else []:
+                old_file.unlink()
+        except Exception as e:
+            logger.warning(f"Failed to clean up old code files: {e}")
 
     def _create_temp_file(self, code: str) -> Path:
         """Create temporary Python file with code + SDK initialization.
@@ -599,8 +673,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from backends.franka import FrankaBackend
 from backends.base import BaseBackend
 from backends.gripper import GripperBackend
-from config import FrankaBackendConfig, BaseBackendConfig, GripperBackendConfig
+from config import FrankaBackendConfig, BaseBackendConfig, GripperBackendConfig, TimingConfig
 from robot_sdk import ArmAPI, BaseAPI, GripperAPI, SensorAPI, YoloAPI
+
+timing = TimingConfig()
 import robot_sdk
 
 # Create backend configurations (use environment variables or defaults)
@@ -658,8 +734,21 @@ async def init_backends():
 asyncio.run(init_backends())
 
 # Initialize SDK global instances
-robot_sdk.arm = ArmAPI(franka_backend)
-robot_sdk.base = BaseAPI(base_backend)
+robot_sdk.arm = ArmAPI(
+    franka_backend,
+    motion_timeout=timing.motion_timeout_s,
+    settle_timeout=timing.settle_timeout_s,
+    command_rate_hz=timing.arm_command_rate_hz,
+    converge_pos_m=timing.arm_converge_pos_m,
+    converge_joint_rad=timing.arm_converge_joint_rad,
+    converge_vel=timing.arm_converge_vel,
+)
+robot_sdk.base = BaseAPI(
+    base_backend,
+    timeout=timing.base_timeout_s,
+    position_tolerance_m=timing.base_position_tolerance_m,
+    angle_tolerance_rad=timing.base_angle_tolerance_rad,
+)
 robot_sdk.gripper = GripperAPI(gripper_backend)
 robot_sdk.sensors = SensorAPI(franka_backend, base_backend, gripper_backend)
 
@@ -714,12 +803,15 @@ async def cleanup():
 asyncio.run(cleanup())
 '''
 
-        # Create temporary file
-        fd, path = tempfile.mkstemp(suffix=".py", prefix="robot_code_")
-        os.write(fd, wrapper.encode("utf-8"))
-        os.close(fd)
+        # Save to logs/code_executions/ with timestamped name
+        _CODE_DIR.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        exec_id = getattr(self, "_execution_id", None) or "unknown"
+        filename = f"{timestamp}_{exec_id}.py"
+        path = _CODE_DIR / filename
+        path.write_text(wrapper, encoding="utf-8")
 
-        return Path(path)
+        return path
 
     def _get_env(self) -> dict:
         """Get environment variables for subprocess.

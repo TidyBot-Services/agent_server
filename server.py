@@ -27,7 +27,6 @@ from backends.gripper import GripperBackend
 from config import LeaseConfig, ServerConfig, ServiceManagerConfig, default_services
 from lease import LeaseManager
 from display_state import DisplayBroadcaster
-from routes.ws import FeedbackBroadcaster
 from arm_monitor import ArmMonitor
 from safety import SafetyEnvelope
 from safety_monitor import SafetyMonitor
@@ -49,7 +48,7 @@ def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> F
     # Initialize app state for background tasks
     app.state.background_tasks = set()
 
-    @app.get("/")
+    @app.get("/", include_in_schema=False)
     async def root():
         if cfg.dashboard:
             return RedirectResponse(url="/services/dashboard")
@@ -64,7 +63,6 @@ def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> F
     # -- core services -------------------------------------------------------
     state_agg = StateAggregator(cfg, base_backend, franka_backend, gripper_backend, camera_backend)
     safety = SafetyEnvelope(cfg.safety)
-    feedback = FeedbackBroadcaster()
     display = DisplayBroadcaster()
 
     # Unified state logger (replaces TrajectoryRecorder)
@@ -110,7 +108,6 @@ def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> F
     lease_mgr = LeaseManager(
         cfg.lease,
         last_moved_at_fn=state_agg.last_moved_at,
-        on_lease_event=feedback.broadcast,
     )
 
     # Wire lease-end callback: rewind to home + clear trajectory
@@ -144,7 +141,7 @@ def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> F
     app.include_router(state_router(state_agg, camera_backend, lease_mgr, base_backend, franka_backend, gripper_backend, system_logger))
     app.include_router(lease_router(lease_mgr))
     app.include_router(rewind_router(rewind_orchestrator, lease_mgr, system_logger, safety_monitor, arm_monitor))
-    app.include_router(ws_router(state_agg, feedback, cfg, camera_backend))
+    app.include_router(ws_router(state_agg, cfg, camera_backend))
     app.include_router(init_code_routes(lease_mgr))
     app.include_router(sdk_docs_router)
     app.include_router(system_guide_router)
@@ -156,8 +153,7 @@ def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> F
         from routes.service_routes import create_router as service_router
         app.include_router(service_router(service_mgr, arm_monitor=arm_monitor))
     if service_mgr is not None:
-        # Wire up event broadcasting for service events
-        service_mgr._on_event = feedback.broadcast
+        pass  # service manager events not currently consumed
 
     # -- lifecycle -----------------------------------------------------------
     @app.on_event("startup")
@@ -247,7 +243,7 @@ def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> F
             if executor.is_running:
                 logger.info("Stopping running code execution")
                 executor.stop()
-            executor.cleanup_temp_files()
+            executor.cleanup_old_code_files()
         except Exception as e:
             logger.warning(f"Failed to cleanup code executor: {e}")
 

@@ -129,6 +129,10 @@ class DisplayBroadcaster:
                 "face": self._state.face,
             })
 
+    def announce(self, text: str) -> None:
+        """Send a voice announcement to all connected display clients (fire-and-forget)."""
+        self._broadcast({"type": "announce", "text": text})
+
     def on_execution_ended(self) -> None:
         """Called when code execution ends — clears content and resets face override."""
         self._face_override = False

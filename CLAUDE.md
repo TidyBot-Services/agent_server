@@ -123,7 +123,7 @@ requests.post("http://localhost:8080/lease/release",
               json={"lease_id": lease_id})
 ```
 
-See `examples/` for more examples (`minimal_test.py`, `joint_move_test.py`, `pick_and_place.py`).
+See `examples/` for usage examples (`pick_and_place.py`, `simple_move.py`) and `tests/` for test scripts.
 
 **How It Works:**
 1. Code runs in isolated subprocess with 5-minute default timeout
@@ -177,20 +177,23 @@ curl -X POST localhost:8080/code/execute \
 | `GET /cameras` | List connected cameras |
 | `GET /cameras/{device_id}/frame` | Frame from specific camera |
 | `WS /ws/state` | WebSocket state stream |
-| `WS /ws/feedback` | WebSocket command feedback |
 | `WS /ws/cameras` | WebSocket camera streaming |
 
 ### Lease Endpoints
 
 | Endpoint | Description |
 |----------|-------------|
-| `POST /lease/acquire` | Acquire control lease `{"holder": "name"}` |
+| `POST /lease/acquire` | Acquire or queue for lease (never blocks) `{"holder": "name"}` |
+| `GET /lease/queue/{ticket_id}` | Check ticket status and queue position |
+| `DELETE /lease/queue/{ticket_id}` | Cancel ticket (leave queue) |
 | `POST /lease/release` | Release lease `{"lease_id": "..."}` |
 | `POST /lease/extend` | Extend lease timeout `{"lease_id": "..."}` |
 | `GET /lease/status` | Current lease holder and queue |
-| `POST /lease/pause-queue` | Pause queue processing (admin) |
-| `POST /lease/resume-queue` | Resume queue processing (admin) |
-| `POST /lease/clear-queue` | Clear all queued lease requests (admin) |
+| `POST /lease/pause-queue` | Pause queue processing (admin, hidden from `/docs`) |
+| `POST /lease/resume-queue` | Resume queue processing (admin, hidden from `/docs`) |
+| `POST /lease/clear-queue` | Clear all queued lease requests (admin, hidden from `/docs`) |
+
+> **TODO:** When a maintenance agent is added, gate these admin endpoints behind an `X-Admin-Key` header instead of just hiding them from the schema.
 
 For frontend-facing documentation, see `GET /docs/guide/html`.
 
@@ -353,13 +356,15 @@ curl -X PUT localhost:8080/rewind/config \
 | `code_executor.py` | Subprocess code execution engine |
 | `robot_sdk/` | SDK modules (arm, base, gripper, sensors, rewind) |
 | `routes/sdk_docs.py` | Auto-generated SDK documentation |
-| `test_api.sh` | API test script |
 | `controllers/` | Python controllers for arm and base |
-| `examples/` | Example scripts (minimal_test.py, joint_move_test.py, pick_and_place.py) |
+| `examples/` | Example scripts (pick_and_place.py, simple_move.py) |
+| `tests/` | All test scripts |
 
 ## Testing
 
 ```bash
-./test_api.sh              # Test all endpoints (skip gripper)
-./test_api.sh --with-gripper  # Include gripper tests
+tests/test_api.sh                          # Test all endpoints (skip gripper)
+tests/test_api.sh --with-gripper           # Include gripper tests
+python3 tests/test_all_sdk_motions.py      # Comprehensive SDK motion test
+python3 tests/test_all_sdk_motions.py --only-queue  # Just test concurrent queue
 ```

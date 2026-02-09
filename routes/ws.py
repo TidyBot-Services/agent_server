@@ -21,29 +21,6 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-class FeedbackBroadcaster:
-    """Manages operator feedback WebSocket connections."""
-
-    def __init__(self) -> None:
-        self._connections: list[WebSocket] = []
-
-    async def connect(self, ws: WebSocket) -> None:
-        await ws.accept()
-        self._connections.append(ws)
-
-    def disconnect(self, ws: WebSocket) -> None:
-        if ws in self._connections:
-            self._connections.remove(ws)
-
-    def broadcast(self, event: dict) -> None:
-        """Non-async broadcast — schedules sends on the event loop."""
-        for ws in list(self._connections):
-            try:
-                asyncio.get_event_loop().create_task(ws.send_json(event))
-            except Exception:
-                self._connections.remove(ws)
-
-
 class CameraSubscription:
     """Tracks a camera WebSocket client's subscription."""
     
@@ -54,16 +31,15 @@ class CameraSubscription:
         self.devices: list[str] = []  # Empty = all devices
 
 
-def create_router(state_agg, feedback_broadcaster: FeedbackBroadcaster, config, camera_backend=None):
+def create_router(state_agg, config, camera_backend=None):
     """Create WebSocket router.
-    
+
     Args:
         state_agg: StateAggregator instance
-        feedback_broadcaster: FeedbackBroadcaster instance
         config: ServerConfig
         camera_backend: Optional CameraBackend for /ws/cameras
     """
-    
+
     @router.websocket("/ws/state")
     async def ws_state(ws: WebSocket):
         await ws.accept()
@@ -76,18 +52,6 @@ def create_router(state_agg, feedback_broadcaster: FeedbackBroadcaster, config, 
             pass
         except Exception:
             logger.exception("ws/state error")
-
-    @router.websocket("/ws/feedback")
-    async def ws_feedback(ws: WebSocket):
-        await feedback_broadcaster.connect(ws)
-        try:
-            while True:
-                # Keep connection alive; client doesn't need to send anything
-                await ws.receive_text()
-        except WebSocketDisconnect:
-            feedback_broadcaster.disconnect(ws)
-        except Exception:
-            feedback_broadcaster.disconnect(ws)
 
     @router.websocket("/ws/cameras")
     async def ws_cameras(ws: WebSocket):

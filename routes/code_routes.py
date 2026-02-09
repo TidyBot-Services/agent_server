@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Header, Request
 from pydantic import BaseModel, Field
 
 from code_executor import CodeExecutor, CodeValidationResult, ExecutionResult, ExecutionStatus
+from config import TIMING
 from lease import LeaseManager
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ class CodeStatusResponse(BaseModel):
     stdout: str = ""
     stderr: str = ""
     duration: float = 0.0
+    code: Optional[str] = None
 
 
 class CodeResultResponse(BaseModel):
@@ -126,8 +128,8 @@ def init_code_routes(lease_manager: LeaseManager):
         # Generate execution ID
         execution_id = str(uuid.uuid4())[:8]
 
-        # Use timeout from request or default to 300s (5 minutes)
-        timeout = body.timeout if body.timeout is not None else 300.0
+        # Use timeout from request or central default
+        timeout = body.timeout if body.timeout is not None else TIMING.code_execution_timeout_s
 
         # Get holder name from lease and client IP
         lease_info = lease_manager.current_lease
@@ -245,6 +247,7 @@ def init_code_routes(lease_manager: LeaseManager):
             stdout=stdout,
             stderr=stderr,
             duration=duration,
+            code=executor.current_code,
         )
 
     @router.get("/result", response_model=CodeResultResponse)

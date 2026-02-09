@@ -1,14 +1,15 @@
-"""Simple base controller using the agent server HTTP API.
+"""Simple base controller using direct RPC connection to base_server.
 
-Supports two control modes:
+Supports three control modes:
 1. Delta pose mode - move relative to current base pose
 2. Global pose mode - move to absolute pose (x, y, theta)
+3. Velocity mode - send velocity commands
 
 Example usage:
     from controllers import BaseController
 
     base = BaseController()
-    base.acquire_lease("my-controller")
+    base.connect()
 
     # Move 0.5m forward
     base.move_delta(dx=0.5)
@@ -19,17 +20,24 @@ Example usage:
     # Move to absolute position
     base.move_to_pose(x=1.0, y=0.5, theta=0.0)
 
-    base.release_lease()
+    base.disconnect()
 """
 
 from __future__ import annotations
 
 import math
+import multiprocessing.managers
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
-import requests
+import numpy as np
+
+
+class _BaseManager(multiprocessing.managers.BaseManager):
+    pass
+
+_BaseManager.register("Base")
 
 
 @dataclass
@@ -44,7 +52,7 @@ class BasePose:
 
 
 class BaseController:
-    """Simple base controller using agent server HTTP API.
+    """Simple base controller using direct RPC connection to base_server.
 
     Coordinate frame:
     - x: forward (positive = forward)
@@ -55,59 +63,49 @@ class BaseController:
 
     def __init__(
         self,
-        server_url: str = "http://localhost:8080",
-        timeout: float = 30.0,
+        host: str = "localhost",
+        port: int = 50000,
+        authkey: bytes = b"secret password",
     ) -> None:
-        self.server_url = server_url.rstrip("/")
-        self.timeout = timeout
-        self._lease_id: Optional[str] = None
-        self._holder: Optional[str] = None
+        self._host = host
+        self._port = port
+        self._authkey = authkey
+        self._base: Any = None
 
-    # -- Lease management -----------------------------------------------------
-
-    def acquire_lease(self, holder: str = "base-controller") -> str:
-        """Acquire control lease. Returns lease_id."""
-        resp = requests.post(
-            f"{self.server_url}/lease/acquire",
-            json={"holder": holder},
-            timeout=self.timeout,
+    def connect(self) -> None:
+        """Connect to base_server via RPC."""
+        mgr = _BaseManager(
+            address=(self._host, self._port),
+            authkey=self._authkey,
         )
-        resp.raise_for_status()
-        data = resp.json()
-        self._lease_id = data["lease_id"]
-        self._holder = holder
-        return self._lease_id
+        mgr.connect()
+        self._base = mgr.Base()
+        self._base.ensure_initialized()
+        print(f"Connected to base_server at {self._host}:{self._port}")
 
-    def release_lease(self) -> None:
-        """Release control lease."""
-        if self._lease_id:
-            requests.post(
-                f"{self.server_url}/lease/release",
-                json={"lease_id": self._lease_id},
-                timeout=self.timeout,
-            )
-            self._lease_id = None
-            self._holder = None
-
-    def _headers(self) -> dict:
-        """Get request headers with lease ID."""
-        headers = {"Content-Type": "application/json"}
-        if self._lease_id:
-            headers["X-Lease-Id"] = self._lease_id
-        return headers
+    def disconnect(self) -> None:
+        """Disconnect from base_server."""
+        self._base = None
 
     # -- State ----------------------------------------------------------------
 
     def get_state(self) -> dict:
-        """Get current robot state."""
-        resp = requests.get(f"{self.server_url}/state", timeout=self.timeout)
-        resp.raise_for_status()
-        return resp.json()
+        """Get current base state."""
+        if self._base is None:
+            raise RuntimeError("Not connected. Call connect() first.")
+        raw = self._base.get_state()
+        pose = raw.get("base_pose")
+        if isinstance(pose, np.ndarray):
+            pose = pose.tolist()
+        velocity = raw.get("base_velocity", [0.0, 0.0, 0.0])
+        if isinstance(velocity, np.ndarray):
+            velocity = velocity.tolist()
+        return {"base_pose": pose, "base_velocity": velocity}
 
     def get_pose(self) -> BasePose:
         """Get current base pose (x, y, theta)."""
         state = self.get_state()
-        pose = state.get("base", {}).get("pose", [0.0, 0.0, 0.0])
+        pose = state.get("base_pose", [0.0, 0.0, 0.0])
         return BasePose(x=pose[0], y=pose[1], theta=pose[2])
 
     # -- Control commands -----------------------------------------------------
@@ -117,31 +115,24 @@ class BaseController:
         x: Optional[float] = None,
         y: Optional[float] = None,
         theta: Optional[float] = None,
-    ) -> dict:
+    ) -> None:
         """Move to absolute pose (global frame).
 
         Args:
             x: Target x position in meters (None = keep current)
             y: Target y position in meters (None = keep current)
             theta: Target orientation in radians (None = keep current)
-
-        Returns:
-            Response dict with status
         """
+        if self._base is None:
+            raise RuntimeError("Not connected. Call connect() first.")
+
         current = self.get_pose()
 
         target_x = x if x is not None else current.x
         target_y = y if y is not None else current.y
         target_theta = theta if theta is not None else current.theta
 
-        resp = requests.post(
-            f"{self.server_url}/cmd/base/move",
-            headers=self._headers(),
-            json={"x": target_x, "y": target_y, "theta": target_theta},
-            timeout=self.timeout,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        self._base.execute_action({"base_pose": np.array([target_x, target_y, target_theta])})
 
     def move_delta(
         self,
@@ -149,7 +140,7 @@ class BaseController:
         dy: float = 0.0,
         dtheta: float = 0.0,
         frame: str = "global",
-    ) -> dict:
+    ) -> None:
         """Move relative to current pose.
 
         Args:
@@ -157,14 +148,10 @@ class BaseController:
             dy: Position delta in y (meters)
             dtheta: Orientation delta in radians
             frame: "global" for world frame deltas, "local" for robot frame deltas
-
-        Returns:
-            Response dict with status
         """
         current = self.get_pose()
 
         if frame == "local":
-            # Transform local delta to global frame
             cos_t = math.cos(current.theta)
             sin_t = math.sin(current.theta)
             global_dx = cos_t * dx - sin_t * dy
@@ -180,14 +167,7 @@ class BaseController:
         # Normalize theta to [-pi, pi]
         target_theta = math.atan2(math.sin(target_theta), math.cos(target_theta))
 
-        resp = requests.post(
-            f"{self.server_url}/cmd/base/move",
-            headers=self._headers(),
-            json={"x": target_x, "y": target_y, "theta": target_theta},
-            timeout=self.timeout,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        self.move_to_pose(x=target_x, y=target_y, theta=target_theta)
 
     def move_velocity(
         self,
@@ -195,7 +175,7 @@ class BaseController:
         vy: float = 0.0,
         wz: float = 0.0,
         frame: str = "global",
-    ) -> dict:
+    ) -> None:
         """Send velocity command.
 
         Args:
@@ -203,54 +183,42 @@ class BaseController:
             vy: Linear velocity in y (m/s)
             wz: Angular velocity around z (rad/s)
             frame: "global" or "local"
-
-        Returns:
-            Response dict with status
         """
-        resp = requests.post(
-            f"{self.server_url}/cmd/base/move",
-            headers=self._headers(),
-            json={"vx": vx, "vy": vy, "wz": wz, "frame": frame},
-            timeout=self.timeout,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        if self._base is None:
+            raise RuntimeError("Not connected. Call connect() first.")
+        self._base.set_target_velocity([vx, vy, wz], frame=frame)
 
-    def stop(self) -> dict:
+    def stop(self) -> None:
         """Stop base movement."""
-        resp = requests.post(
-            f"{self.server_url}/cmd/base/stop",
-            headers=self._headers(),
-            timeout=self.timeout,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        if self._base is None:
+            raise RuntimeError("Not connected. Call connect() first.")
+        self._base.stop()
 
     # -- Convenience methods --------------------------------------------------
 
-    def forward(self, distance: float) -> dict:
+    def forward(self, distance: float) -> None:
         """Move forward by specified distance (meters)."""
-        return self.move_delta(dx=distance, frame="local")
+        self.move_delta(dx=distance, frame="local")
 
-    def backward(self, distance: float) -> dict:
+    def backward(self, distance: float) -> None:
         """Move backward by specified distance (meters)."""
-        return self.move_delta(dx=-distance, frame="local")
+        self.move_delta(dx=-distance, frame="local")
 
-    def left(self, distance: float) -> dict:
+    def left(self, distance: float) -> None:
         """Strafe left by specified distance (meters)."""
-        return self.move_delta(dy=distance, frame="local")
+        self.move_delta(dy=distance, frame="local")
 
-    def right(self, distance: float) -> dict:
+    def right(self, distance: float) -> None:
         """Strafe right by specified distance (meters)."""
-        return self.move_delta(dy=-distance, frame="local")
+        self.move_delta(dy=-distance, frame="local")
 
-    def rotate(self, angle: float) -> dict:
+    def rotate(self, angle: float) -> None:
         """Rotate by specified angle (radians, positive = CCW)."""
-        return self.move_delta(dtheta=angle)
+        self.move_delta(dtheta=angle)
 
-    def rotate_degrees(self, degrees: float) -> dict:
+    def rotate_degrees(self, degrees: float) -> None:
         """Rotate by specified angle (degrees, positive = CCW)."""
-        return self.move_delta(dtheta=math.radians(degrees))
+        self.move_delta(dtheta=math.radians(degrees))
 
     def print_state(self) -> None:
         """Print current base state."""
@@ -260,7 +228,8 @@ class BaseController:
     # -- Context manager ------------------------------------------------------
 
     def __enter__(self) -> "BaseController":
+        self.connect()
         return self
 
     def __exit__(self, *args) -> None:
-        self.release_lease()
+        self.disconnect()

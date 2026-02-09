@@ -3,7 +3,7 @@
 Usage:
     1. Start robot services:  ./start_robot.sh --no-controller
     2. Start agent server:    python3 server.py --no-service-manager --no-reset-on-release
-    3. Run this test:         python3 examples/test_collision_rewind.py
+    3. Run this test:         python3 tests/test_collision_rewind.py
 
 What this does:
     - Acquires a lease
@@ -106,10 +106,11 @@ def main():
     while time.time() - t_start < DURATION:
         elapsed = time.time() - t_start
 
-        # Send velocity command (forward + rotate in local frame)
+        # Send velocity command via code execution (forward + rotate in local frame)
         try:
-            requests.post(f"{URL}/cmd/base/move", headers=headers,
-                          json={"vx": VELOCITY, "vy": 0.0, "wz": ROTATION, "frame": "local"})
+            code = f"from robot_sdk import base; base.send_velocity(vx={VELOCITY}, vy=0.0, wz={ROTATION}, frame='local', duration={POLL_INTERVAL + 0.1})"
+            requests.post(f"{URL}/code/execute", headers=headers,
+                          json={"code": code, "timeout": 10})
         except Exception as e:
             print(f"  cmd error: {e}")
 
@@ -148,7 +149,9 @@ def main():
     # 7. Stop the base
     print()
     try:
-        requests.post(f"{URL}/cmd/base/stop", headers=headers)
+        code = "from robot_sdk import base; base.stop()"
+        requests.post(f"{URL}/code/execute", headers=headers,
+                      json={"code": code, "timeout": 5})
     except Exception:
         pass
     print("Base stopped.")

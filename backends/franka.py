@@ -116,6 +116,9 @@ class FrankaBackend:
             "ee_pose": list(state.O_T_EE),
             "ee_wrench": list(state.O_F_ext_hat_K),
             "control_mode": int(state.control_mode),
+            "auto_hold_active": bool(getattr(state, 'auto_hold_active', False)),
+            "q_target": list(getattr(state, 'q_target', [0.0] * 7)),
+            "pose_target": list(getattr(state, 'pose_target', [0.0] * 16)),
         }
 
     # -- arm commands --------------------------------------------------------
@@ -123,34 +126,48 @@ class FrankaBackend:
     def send_joint_position(self, q: list[float], blocking: bool = True) -> bool:
         if self._dry_run:
             return True
+        if self._client is None:
+            raise ConnectionError("Arm backend not connected")
         return self._client.send_joint_position(np.array(q), blocking=blocking)
 
     def send_cartesian_pose(self, pose: list[float], blocking: bool = True) -> bool:
         if self._dry_run:
             return True
+        if self._client is None:
+            raise ConnectionError("Arm backend not connected")
         return self._client.send_cartesian_pose(np.array(pose), blocking=blocking)
 
     def set_gains(self, **kwargs) -> bool:
         if self._dry_run:
             return True
+        if self._client is None:
+            raise ConnectionError("Arm backend not connected")
         return self._client.set_gains(**kwargs)
 
     def send_joint_velocity(self, dq: list[float]) -> bool:
         if self._dry_run:
             return True
+        if self._client is None:
+            raise ConnectionError("Arm backend not connected")
         return self._client.send_joint_velocity(np.array(dq), blocking=True)
 
     def send_cartesian_velocity(self, velocity: list[float]) -> bool:
         if self._dry_run:
             return True
+        if self._client is None:
+            raise ConnectionError("Arm backend not connected")
         return self._client.send_cartesian_velocity(np.array(velocity), blocking=True)
 
     def set_control_mode(self, mode: int) -> bool:
         if self._dry_run:
             return True
+        if self._client is None:
+            raise ConnectionError("Arm backend not connected")
         return self._client.set_control_mode(mode)
 
     def emergency_stop(self) -> bool:
         if self._dry_run:
             return True
+        if self._client is None:
+            raise ConnectionError("Arm backend not connected")
         return self._client.emergency_stop()

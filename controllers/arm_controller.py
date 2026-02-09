@@ -1,4 +1,4 @@
-"""Simple arm controller using the agent server HTTP API.
+"""Simple arm controller using direct ZMQ connection to FrankaServer.
 
 Supports three control modes:
 1. Absolute joint mode - move to specific joint angles
@@ -9,7 +9,7 @@ Example usage:
     from controllers import ArmController
 
     arm = ArmController()
-    arm.acquire_lease("my-controller")
+    arm.connect()
 
     # Move to joint position
     arm.move_joints([0.0, -0.5, 0.0, -2.0, 0.0, 1.5, 0.7])
@@ -20,18 +20,26 @@ Example usage:
     # Move to absolute position
     arm.move_to_pose(x=0.5, y=0.0, z=0.4)
 
-    arm.release_lease()
+    arm.disconnect()
 """
 
 from __future__ import annotations
 
 import math
+import os
+import sys
 import time
 from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
-import requests
+
+# Add franka_server package to path
+_FRANKA_PKG = os.path.join(
+    os.path.dirname(__file__), "..", "..", "franka_interact", "franka_server"
+)
+if os.path.abspath(_FRANKA_PKG) not in sys.path:
+    sys.path.insert(0, os.path.abspath(_FRANKA_PKG))
 
 
 @dataclass
@@ -97,7 +105,6 @@ def rotation_matrix_to_quaternion(R: np.ndarray) -> tuple[float, float, float, f
 
 def quaternion_to_rotation_matrix(w: float, x: float, y: float, z: float) -> np.ndarray:
     """Convert quaternion to 3x3 rotation matrix."""
-    # Normalize quaternion
     n = math.sqrt(w * w + x * x + y * y + z * z)
     w, x, y, z = w / n, x / n, y / n, z / n
 
@@ -122,7 +129,7 @@ def euler_to_rotation_matrix(roll: float, pitch: float, yaw: float) -> np.ndarra
 
 
 class ArmController:
-    """Simple arm controller using agent server HTTP API.
+    """Simple arm controller using direct ZMQ connection to FrankaServer.
 
     Coordinate frames:
     - Joint positions are in radians
@@ -130,126 +137,164 @@ class ArmController:
     - ee_pose from state is O_T_EE (base to end-effector transform)
     """
 
+    MODE_JOINT_POSITION = 1
+    MODE_CARTESIAN_IMPEDANCE = 7
+
     def __init__(
         self,
-        server_url: str = "http://localhost:8080",
-        timeout: float = 30.0,
+        server_ip: str = "localhost",
+        cmd_port: int = 5555,
+        state_port: int = 5556,
+        stream_port: int = 5557,
     ) -> None:
-        self.server_url = server_url.rstrip("/")
-        self.timeout = timeout
-        self._lease_id: Optional[str] = None
-        self._holder: Optional[str] = None
+        self._server_ip = server_ip
+        self._cmd_port = cmd_port
+        self._state_port = state_port
+        self._stream_port = stream_port
+        self._client = None
 
-    # -- Lease management -----------------------------------------------------
-
-    def acquire_lease(self, holder: str = "arm-controller") -> str:
-        """Acquire control lease. Returns lease_id."""
-        resp = requests.post(
-            f"{self.server_url}/lease/acquire",
-            json={"holder": holder},
-            timeout=self.timeout,
+    def connect(self) -> None:
+        """Connect to FrankaServer via ZMQ."""
+        from franka_server.client import FrankaClient
+        self._client = FrankaClient(
+            server_ip=self._server_ip,
+            cmd_port=self._cmd_port,
+            state_port=self._state_port,
+            stream_port=self._stream_port,
         )
-        resp.raise_for_status()
-        data = resp.json()
-        self._lease_id = data["lease_id"]
-        self._holder = holder
-        return self._lease_id
+        self._client.start()
+        print(f"Connected to FrankaServer at {self._server_ip}")
 
-    def release_lease(self) -> None:
-        """Release control lease."""
-        if self._lease_id:
-            requests.post(
-                f"{self.server_url}/lease/release",
-                json={"lease_id": self._lease_id},
-                timeout=self.timeout,
-            )
-            self._lease_id = None
-            self._holder = None
-
-    def _headers(self) -> dict:
-        """Get request headers with lease ID."""
-        headers = {"Content-Type": "application/json"}
-        if self._lease_id:
-            headers["X-Lease-Id"] = self._lease_id
-        return headers
+    def disconnect(self) -> None:
+        """Disconnect from FrankaServer."""
+        if self._client:
+            self._client.stop()
+            self._client = None
 
     # -- State ----------------------------------------------------------------
 
     def get_state(self) -> dict:
-        """Get current robot state."""
-        resp = requests.get(f"{self.server_url}/state", timeout=self.timeout)
-        resp.raise_for_status()
-        return resp.json()
+        """Get current arm state."""
+        if self._client is None:
+            return {}
+        state = self._client.latest_state
+        if state is None:
+            return {}
+        return {
+            "q": list(state.q),
+            "dq": list(state.dq),
+            "ee_pose": list(state.O_T_EE),
+            "ee_wrench": list(state.O_F_ext_hat_K),
+            "control_mode": int(state.control_mode),
+        }
 
     def get_joint_positions(self) -> list[float]:
         """Get current joint positions (7 values in radians)."""
         state = self.get_state()
-        return state.get("arm", {}).get("q", [0.0] * 7)
+        return state.get("q", [0.0] * 7)
 
     def get_ee_pose(self) -> Pose:
         """Get current end-effector pose in base frame."""
         state = self.get_state()
-        ee_pose_flat = state.get("arm", {}).get("ee_pose", [])
+        ee_pose_flat = state.get("ee_pose", [])
         if len(ee_pose_flat) != 16:
-            # Return identity pose if no data available
             return Pose(x=0.0, y=0.0, z=0.0)
-        # Convert column-major flat array to 4x4 matrix
         matrix = np.array(ee_pose_flat).reshape(4, 4, order="F")
         return Pose.from_matrix(matrix)
 
     def get_ee_matrix(self) -> np.ndarray:
         """Get current end-effector pose as 4x4 matrix."""
         state = self.get_state()
-        ee_pose_flat = state.get("arm", {}).get("ee_pose", [])
+        ee_pose_flat = state.get("ee_pose", [])
         if len(ee_pose_flat) != 16:
-            # Return identity matrix if no data available
             return np.eye(4)
         return np.array(ee_pose_flat).reshape(4, 4, order="F")
 
     # -- Control commands -----------------------------------------------------
 
-    def move_joints(self, q: list[float], blocking: bool = True) -> dict:
+    def move_joints(self, q: list[float]) -> bool:
         """Move to absolute joint positions.
 
         Args:
             q: 7 joint angles in radians
-            blocking: If True (default), wait for motion to complete
 
         Returns:
-            Response dict with status
+            True if command was sent successfully
         """
         if len(q) != 7:
             raise ValueError(f"Expected 7 joint values, got {len(q)}")
+        if self._client is None:
+            raise RuntimeError("Not connected. Call connect() first.")
 
-        resp = requests.post(
-            f"{self.server_url}/cmd/arm/move",
-            headers=self._headers(),
-            json={"mode": "joint_position", "values": list(q)},
-            timeout=self.timeout,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        self._client.set_control_mode(self.MODE_JOINT_POSITION)
+        return self._client.send_joint_position(np.array(q))
 
-    def move_to_matrix(self, matrix: np.ndarray) -> dict:
+    def move_to_matrix(
+        self,
+        matrix: np.ndarray,
+        timeout: float = 30.0,
+        settle_pos: float = 0.005,
+        settle_vel: float = 0.05,
+        stall_timeout: float = 2.0,
+    ) -> dict:
         """Move to absolute pose specified as 4x4 transformation matrix.
+
+        Streams the target pose at ~20 Hz to keep the franka server command
+        stream alive (prevents 100ms idle timeout / auto-hold activation).
 
         Args:
             matrix: 4x4 homogeneous transformation matrix (base frame)
+            timeout: Max total time in seconds (default: 30s)
+            settle_pos: Position error threshold in meters (default: 5mm)
+            settle_vel: Max joint velocity (rad/s) to consider settled (default: 0.05)
+            stall_timeout: Time without progress before declaring stall (default: 2s)
 
         Returns:
-            Response dict with status
+            Response dict with status, pos_error, duration
         """
-        # Flatten to column-major order (Fortran order) as expected by Franka
-        pose_flat = matrix.flatten(order="F").tolist()
+        if self._client is None:
+            raise RuntimeError("Not connected. Call connect() first.")
 
-        resp = requests.post(
-            f"{self.server_url}/cmd/arm/move",
-            headers=self._headers(),
-            json={"mode": "cartesian_pose", "values": pose_flat},
-            timeout=self.timeout,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        pose_flat = matrix.flatten(order="F").tolist()
+        target_x, target_y, target_z = matrix[0, 3], matrix[1, 3], matrix[2, 3]
+
+        self._client.set_control_mode(self.MODE_CARTESIAN_IMPEDANCE)
+
+        cmd_interval = 0.05  # 20 Hz
+        start_time = time.time()
+        last_progress_time = start_time
+        best_pos_error = float("inf")
+
+        while True:
+            elapsed = time.time() - start_time
+            if elapsed > timeout:
+                return {"status": "timeout", "pos_error": best_pos_error, "duration": elapsed}
+
+            self._client.send_cartesian_pose(np.array(pose_flat), blocking=False)
+
+            state = self.get_state()
+            ee_pose = state.get("ee_pose", [])
+            dq = state.get("dq", [0.0] * 7)
+
+            if len(ee_pose) == 16:
+                pos_error = math.sqrt(
+                    (ee_pose[12] - target_x) ** 2
+                    + (ee_pose[13] - target_y) ** 2
+                    + (ee_pose[14] - target_z) ** 2
+                )
+                max_vel = max(abs(v) for v in dq)
+
+                if pos_error < settle_pos and max_vel < settle_vel:
+                    return {"status": "completed", "pos_error": pos_error, "duration": time.time() - start_time}
+
+                if pos_error < best_pos_error - 0.001:
+                    last_progress_time = time.time()
+                    best_pos_error = pos_error
+
+                if time.time() - last_progress_time > stall_timeout and max_vel < settle_vel:
+                    return {"status": "stalled", "pos_error": pos_error, "duration": time.time() - start_time}
+
+            time.sleep(cmd_interval)
 
     def move_to_pose(
         self,
@@ -260,6 +305,7 @@ class ArmController:
         pitch: float = 0.0,
         yaw: float = 0.0,
         keep_orientation: bool = True,
+        timeout: float = 30.0,
     ) -> dict:
         """Move to absolute pose in base frame.
 
@@ -267,14 +313,14 @@ class ArmController:
             x, y, z: Target position in meters (None = keep current)
             roll, pitch, yaw: Target orientation in radians (ignored if keep_orientation=True)
             keep_orientation: If True, maintain current orientation
+            timeout: Max time in seconds (default: 30s)
 
         Returns:
-            Response dict with status
+            Response dict with status, pos_error, duration
         """
         current = self.get_ee_matrix()
         target = current.copy()
 
-        # Update position
         if x is not None:
             target[0, 3] = x
         if y is not None:
@@ -282,11 +328,10 @@ class ArmController:
         if z is not None:
             target[2, 3] = z
 
-        # Update orientation if requested
         if not keep_orientation:
             target[:3, :3] = euler_to_rotation_matrix(roll, pitch, yaw)
 
-        return self.move_to_matrix(target)
+        return self.move_to_matrix(target, timeout=timeout)
 
     def move_delta(
         self,
@@ -297,6 +342,7 @@ class ArmController:
         dpitch: float = 0.0,
         dyaw: float = 0.0,
         frame: str = "base",
+        timeout: float = 30.0,
     ) -> dict:
         """Move relative to current pose.
 
@@ -304,13 +350,13 @@ class ArmController:
             dx, dy, dz: Position delta in meters
             droll, dpitch, dyaw: Orientation delta in radians
             frame: "base" for world frame deltas, "ee" for end-effector frame deltas
+            timeout: Max time in seconds (default: 30s)
 
         Returns:
-            Response dict with status
+            Response dict with status, pos_error, duration
         """
         current = self.get_ee_matrix()
 
-        # Create delta transform
         delta = np.eye(4)
         delta[:3, :3] = euler_to_rotation_matrix(droll, dpitch, dyaw)
         delta[0, 3] = dx
@@ -318,38 +364,30 @@ class ArmController:
         delta[2, 3] = dz
 
         if frame == "base":
-            # Apply delta in base frame: T_new = delta @ T_current (for position)
-            # For pure translation in base frame:
             target = current.copy()
             target[0, 3] += dx
             target[1, 3] += dy
             target[2, 3] += dz
-            # For rotation, apply in base frame
             if droll != 0 or dpitch != 0 or dyaw != 0:
                 rot_delta = euler_to_rotation_matrix(droll, dpitch, dyaw)
                 target[:3, :3] = rot_delta @ current[:3, :3]
         else:
-            # Apply delta in end-effector frame: T_new = T_current @ delta
             target = current @ delta
 
-        return self.move_to_matrix(target)
+        return self.move_to_matrix(target, timeout=timeout)
 
-    def stop(self) -> dict:
+    def stop(self) -> bool:
         """Emergency stop the arm."""
-        resp = requests.post(
-            f"{self.server_url}/cmd/arm/stop",
-            headers=self._headers(),
-            timeout=self.timeout,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        if self._client is None:
+            raise RuntimeError("Not connected. Call connect() first.")
+        return self._client.emergency_stop()
 
     # -- Convenience methods --------------------------------------------------
 
-    def home(self) -> dict:
+    def home(self) -> bool:
         """Move to a safe home position."""
-        home_joints = [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
-        return self.move_joints(home_joints)
+        from system_logger.config import ARM_HOME_Q
+        return self.move_joints(list(ARM_HOME_Q))
 
     def print_state(self) -> None:
         """Print current arm state."""
@@ -358,13 +396,14 @@ class ArmController:
         if joints:
             print(f"Joints: [{', '.join(f'{q:.3f}' for q in joints)}]")
         else:
-            print("Joints: [no data - franka backend not connected]")
+            print("Joints: [no data - not connected]")
         print(f"EE pose: x={pose.x:.3f}, y={pose.y:.3f}, z={pose.z:.3f}")
 
     # -- Context manager ------------------------------------------------------
 
     def __enter__(self) -> "ArmController":
+        self.connect()
         return self
 
     def __exit__(self, *args) -> None:
-        self.release_lease()
+        self.disconnect()

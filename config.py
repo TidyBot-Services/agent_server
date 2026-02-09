@@ -193,12 +193,72 @@ class SafetyConfig:
 
 
 @dataclass
+class TimingConfig:
+    """Central timing constants for the entire agent server stack.
+
+    All timeouts, rates, and durations in one place so interactions between
+    layers are visible.  Constants flow into the SDK subprocess via env vars
+    (see CodeExecutor._create_temp_file).
+
+    Timeout budget for a single blocking SDK call
+    ──────────────────────────────────────────────
+    ┌─ code_execution_timeout_s (300 s) ──────────────────────────────┐
+    │  ┌─ motion_timeout_s (30 s) ─────────────────────────────────┐  │
+    │  │  interpolation (2–15 s auto-calc)                         │  │
+    │  │  ── then ──                                               │  │
+    │  │  settle_timeout_s (3 s)  ← converge or raise ArmError    │  │
+    │  └───────────────────────────────────────────────────────────┘  │
+    │                                                                 │
+    │  Lease keeps alive while robot moves (movement detection).      │
+    │  If arm is stuck and not moving:                                │
+    │    settle_timeout_s (3 s) fires BEFORE lease_idle_timeout_s     │
+    │    (15 s), so code gets a clean ArmError.                       │
+    │                                                                 │
+    │  ┌─ lease_idle_timeout_s (15 s) ──┐                             │
+    │  │  lease revoked, code killed    │                             │
+    │  └────────────────────────────────┘                             │
+    └─────────────────────────────────────────────────────────────────┘
+
+    Command rates
+    ─────────────
+    arm_command_rate_hz   50 Hz   joint/cartesian command streaming
+    base_command_rate_hz  10 Hz   base velocity resend (must beat 250 ms hw timeout)
+    """
+
+    # -- Lease --
+    lease_idle_timeout_s: float = 15.0       # idle time before revoke
+    lease_max_duration_s: float = 300.0      # hard cap on any single lease
+    lease_check_interval_s: float = 1.0      # how often the lease watchdog ticks
+
+    # -- Code execution --
+    code_execution_timeout_s: float = 300.0  # subprocess wall-clock limit
+
+    # -- Arm motion --
+    motion_timeout_s: float = 30.0           # overall timeout per blocking arm call
+    settle_timeout_s: float = 3.0            # post-interpolation convergence window
+    arm_command_rate_hz: float = 50.0        # streaming rate for arm commands
+    arm_converge_pos_m: float = 0.03         # cartesian convergence threshold (meters)
+    arm_converge_joint_rad: float = 0.02     # joint convergence threshold (radians)
+    arm_converge_vel: float = 0.05           # max joint velocity to declare settled (rad/s)
+
+    # -- Base motion --
+    base_timeout_s: float = 30.0             # overall timeout per blocking base call
+    base_command_rate_hz: float = 10.0       # resend rate (must beat 250 ms hw timeout)
+    base_position_tolerance_m: float = 0.05  # convergence threshold (meters)
+    base_angle_tolerance_rad: float = 0.05   # convergence threshold (radians)
+
+
+# Singleton default — importable by anyone in the server process.
+TIMING = TimingConfig()
+
+
+@dataclass
 class LeaseConfig:
-    idle_timeout_s: float = 15.0
-    warning_grace_s: float = 10.0
-    max_duration_s: float = 300.0
-    check_interval_s: float = 1.0
+    idle_timeout_s: float = TIMING.lease_idle_timeout_s
+    max_duration_s: float = TIMING.lease_max_duration_s
+    check_interval_s: float = TIMING.lease_check_interval_s
     reset_on_release: bool = True  # Auto-rewind to home when lease ends
+    ticket_ttl_s: float = 60.0    # How long granted/cancelled tickets stay in memory
 
 
 @dataclass

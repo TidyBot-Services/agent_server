@@ -12,7 +12,7 @@ router = APIRouter(prefix="/yolo", tags=["yolo"])
 YOLO_VIZ_DIR = "/tmp/yolo_viz"
 
 
-@router.get("/visualization")
+@router.get("/visualization", include_in_schema=False)
 async def get_visualization():
     """Get the latest YOLO segmentation visualization image.
 

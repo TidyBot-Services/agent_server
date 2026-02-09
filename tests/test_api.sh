@@ -1,6 +1,6 @@
 #!/bin/bash
 # API test script for tidybot-agent-server
-# Usage: ./test_api.sh [--with-gripper]
+# Usage: ./tests/test_api.sh [--with-gripper]
 
 set -e
 BASE_URL="${BASE_URL:-http://localhost:8080}"
@@ -128,58 +128,40 @@ else
     fail "POST /lease/extend"
 fi
 
-# Arm move (send current position - no actual movement)
-JOINTS=$(curl -s "$BASE_URL/state" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin)['arm']['q']))")
-RESP=$(curl -s -X POST "$BASE_URL/cmd/arm/move" \
+# Code execution - validate
+RESP=$(curl -s "$BASE_URL/code/sdk")
+if echo "$RESP" | grep -q '"modules"'; then
+    pass "GET /code/sdk"
+else
+    fail "GET /code/sdk: $RESP"
+fi
+
+# Code execution - simple test (print only, no hardware)
+RESP=$(curl -s -X POST "$BASE_URL/code/execute" \
     -H "X-Lease-Id: $LEASE" \
     -H "Content-Type: application/json" \
-    -d "{\"mode\": \"joint_position\", \"values\": $JOINTS}")
-if echo "$RESP" | grep -q '"status":"completed"'; then
-    pass "POST /cmd/arm/move (joint_position)"
+    -d '{"code": "print(\"hello from code execution\")", "timeout": 10}')
+if echo "$RESP" | grep -q '"execution_id"'; then
+    pass "POST /code/execute (submitted)"
 else
-    fail "POST /cmd/arm/move: $RESP"
+    fail "POST /code/execute: $RESP"
 fi
 
-# Arm stop
-RESP=$(curl -s -X POST "$BASE_URL/cmd/arm/stop" -H "X-Lease-Id: $LEASE")
-if echo "$RESP" | grep -q '"status":"completed"'; then
-    pass "POST /cmd/arm/stop"
+# Wait for code execution to complete
+sleep 2
+
+RESP=$(curl -s "$BASE_URL/code/status")
+if echo "$RESP" | grep -q '"is_running"'; then
+    pass "GET /code/status"
 else
-    fail "POST /cmd/arm/stop: $RESP"
+    fail "GET /code/status: $RESP"
 fi
 
-# Base move (zero velocity - no movement)
-RESP=$(curl -s -X POST "$BASE_URL/cmd/base/move" \
-    -H "X-Lease-Id: $LEASE" \
-    -H "Content-Type: application/json" \
-    -d '{"vx": 0.0, "vy": 0.0, "wz": 0.0}')
-if echo "$RESP" | grep -q '"status":"completed"'; then
-    pass "POST /cmd/base/move (velocity)"
+RESP=$(curl -s "$BASE_URL/code/result")
+if echo "$RESP" | grep -q '"result"'; then
+    pass "GET /code/result"
 else
-    fail "POST /cmd/base/move: $RESP"
-fi
-
-# Base stop
-RESP=$(curl -s -X POST "$BASE_URL/cmd/base/stop" -H "X-Lease-Id: $LEASE")
-if echo "$RESP" | grep -q '"status":"completed"'; then
-    pass "POST /cmd/base/stop"
-else
-    fail "POST /cmd/base/stop: $RESP"
-fi
-
-# Gripper
-if $WITH_GRIPPER; then
-    RESP=$(curl -s -X POST "$BASE_URL/cmd/gripper" \
-        -H "X-Lease-Id: $LEASE" \
-        -H "Content-Type: application/json" \
-        -d '{"action": "activate"}')
-    if echo "$RESP" | grep -q '"status":"completed"'; then
-        pass "POST /cmd/gripper (activate)"
-    else
-        fail "POST /cmd/gripper: $RESP"
-    fi
-else
-    skip "POST /cmd/gripper (use --with-gripper)"
+    fail "GET /code/result: $RESP"
 fi
 
 # Rewind steps (dry_run)

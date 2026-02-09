@@ -45,11 +45,24 @@ class ArmAPI:
     MODE_CARTESIAN_VELOCITY = 5
     MODE_CARTESIAN_IMPEDANCE = 7
 
-    def __init__(self, backend: FrankaBackend) -> None:
+    def __init__(
+        self,
+        backend: FrankaBackend,
+        *,
+        motion_timeout: float = 30.0,
+        settle_timeout: float = 3.0,
+        command_rate_hz: float = 50.0,
+        converge_pos_m: float = 0.03,
+        converge_joint_rad: float = 0.02,
+        converge_vel: float = 0.05,
+    ) -> None:
         self._backend = backend
-        self._timeout = 30.0  # Default timeout for blocking operations
-        self._command_rate = 50.0  # Hz for streaming commands
-        self._default_duration = 3.0  # Default motion duration in seconds
+        self._timeout = motion_timeout
+        self._settle_timeout = settle_timeout
+        self._command_rate = command_rate_hz
+        self._converge_pos = converge_pos_m
+        self._converge_joint = converge_joint_rad
+        self._converge_vel = converge_vel
 
     @staticmethod
     def _cubic_ease_in_out(t: float) -> float:
@@ -58,6 +71,76 @@ class ArmAPI:
             return 4 * t * t * t
         else:
             return 1 - pow(-2 * t + 2, 3) / 2
+
+    def _setup_joint_mode(self) -> list:
+        """Read state and set up joint position mode, keeping commands flowing.
+
+        Sends joint position keepalives during setup to prevent the 100ms
+        command timeout from firing (which would activate auto-hold and
+        cause jerky transitions between back-to-back commands).
+
+        Returns:
+            Current joint positions [7].
+        """
+        # Read state with keepalives between reads
+        state = self._backend.get_state()
+        current_q = state.get("q", [0.0] * 7)
+
+        for _ in range(2):
+            self._backend.send_joint_position(list(current_q), blocking=False)
+            time.sleep(0.02)
+            state = self._backend.get_state()
+            current_q = state.get("q", [0.0] * 7)
+
+        # Set mode (sends keepalive to bridge the gap)
+        self._backend.set_control_mode(self.MODE_JOINT_POSITION)
+        self._backend.send_joint_position(list(current_q), blocking=False)
+        time.sleep(0.05)
+
+        # Send another keepalive after mode switch settles
+        self._backend.send_joint_position(list(current_q), blocking=False)
+        time.sleep(0.02)
+
+        return current_q
+
+    def _setup_cartesian_mode(self) -> tuple:
+        """Read state and set up Cartesian impedance mode, keeping commands flowing.
+
+        Sends Cartesian pose keepalives during setup to prevent the 100ms
+        command timeout from firing (which would activate auto-hold and
+        cause jerky transitions between back-to-back commands).
+
+        Returns:
+            Tuple of (current_pose [16], state dict).
+        """
+        # Read state with keepalives between reads
+        state = self._backend.get_state()
+        current_pose = state.get("ee_pose")
+
+        for _ in range(2):
+            if current_pose:
+                self._backend.send_cartesian_pose(list(current_pose), blocking=False)
+            time.sleep(0.02)
+            state = self._backend.get_state()
+            current_pose = state.get("ee_pose")
+
+        if not current_pose:
+            current_pose = [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]
+
+        # Set mode (sends keepalive to bridge the gap)
+        self._backend.set_control_mode(self.MODE_CARTESIAN_IMPEDANCE)
+        self._backend.send_cartesian_pose(list(current_pose), blocking=False)
+        time.sleep(0.05)
+
+        # Set gains (sends keepalive to bridge the gap)
+        self._backend.set_gains(
+            cartesian_stiffness=self._DEFAULT_CART_STIFFNESS,
+            cartesian_damping=self._DEFAULT_CART_DAMPING,
+        )
+        self._backend.send_cartesian_pose(list(current_pose), blocking=False)
+        time.sleep(0.05)
+
+        return current_pose, state
 
     def move_joints(
         self,
@@ -88,15 +171,8 @@ class ArmAPI:
 
         timeout = timeout or self._timeout
 
-        # Set control mode first and wait for it to take effect
-        self._backend.set_control_mode(self.MODE_JOINT_POSITION)
-        time.sleep(0.1)  # Wait for mode switch
-
-        # Get fresh current position (read multiple times to ensure fresh)
-        for _ in range(3):
-            state = self._backend.get_state()
-            time.sleep(0.02)
-        start_q = state.get("q", [0.0] * 7)
+        # Set up joint mode with keepalives to prevent command gap
+        start_q = self._setup_joint_mode()
 
         # Calculate max joint displacement
         max_delta = max(abs(q[i] - start_q[i]) for i in range(7))
@@ -116,6 +192,7 @@ class ArmAPI:
         motion_start_time = time.time()
         start_time = motion_start_time
 
+        settle_deadline = None
         while time.time() - start_time < timeout:
             elapsed = time.time() - motion_start_time
             t = min(1.0, elapsed / duration)  # Normalized time [0, 1]
@@ -131,6 +208,9 @@ class ArmAPI:
 
             # Check if motion complete
             if t >= 1.0:
+                if settle_deadline is None:
+                    settle_deadline = time.time() + self._settle_timeout
+
                 # Verify we've reached target
                 state = self._backend.get_state()
                 current_q = state.get("q", [0.0] * 7)
@@ -141,8 +221,11 @@ class ArmAPI:
                 max_vel = max(abs(v) for v in dq)
 
                 # Done if close to target and not moving much
-                if max_error < 0.02 and max_vel < 0.05:
+                if max_error < self._converge_joint and max_vel < self._converge_vel:
                     return
+
+                if time.time() > settle_deadline:
+                    raise ArmError(f"Timeout: arm did not converge (error={max_error:.3f} rad)")
 
             time.sleep(command_interval)
 
@@ -175,11 +258,8 @@ class ArmAPI:
         """
         timeout = timeout or self._timeout
 
-        # Get fresh current pose (read multiple times to ensure fresh)
-        for _ in range(3):
-            state = self._backend.get_state()
-            time.sleep(0.02)
-        current_pose = state.get("ee_pose", [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1])
+        # Set up Cartesian mode with keepalives to prevent command gap
+        current_pose, state = self._setup_cartesian_mode()
 
         # Extract current position
         current_x, current_y, current_z = current_pose[12], current_pose[13], current_pose[14]
@@ -210,26 +290,12 @@ class ArmAPI:
             dist = ((target_x - current_x)**2 + (target_y - current_y)**2 + (target_z - current_z)**2) ** 0.5
             duration = max(2.0, min(10.0, dist / 0.1))
 
-        # Set impedance mode and gains
-        self._backend.set_control_mode(self.MODE_CARTESIAN_IMPEDANCE)
-        time.sleep(0.05)
-        self._backend.set_gains(
-            cartesian_stiffness=self._DEFAULT_CART_STIFFNESS,
-            cartesian_damping=self._DEFAULT_CART_DAMPING,
-        )
-        print(f"[arm] Cartesian impedance gains: K={self._DEFAULT_CART_STIFFNESS} D={self._DEFAULT_CART_DAMPING}")
-        time.sleep(0.05)
-
-        # Send current pose first to establish command stream (avoids jump)
-        for _ in range(5):
-            self._backend.send_cartesian_pose(list(current_pose), blocking=False)
-            time.sleep(0.02)
-
         # Interpolate smoothly from start to target
         command_interval = 1.0 / self._command_rate
         motion_start_time = time.time()
         start_time = motion_start_time
 
+        settle_deadline = None
         while time.time() - start_time < timeout:
             elapsed = time.time() - motion_start_time
             t = min(1.0, elapsed / duration)
@@ -252,6 +318,9 @@ class ArmAPI:
 
             # Check if motion complete
             if t >= 1.0:
+                if settle_deadline is None:
+                    settle_deadline = time.time() + self._settle_timeout
+
                 state = self._backend.get_state()
                 ee = state.get("ee_pose", current_pose)
                 dq = state.get("dq", [0.0] * 7)
@@ -264,8 +333,11 @@ class ArmAPI:
 
                 max_vel = max(abs(v) for v in dq)
 
-                if pos_error < 0.03 and max_vel < 0.05:  # 3cm, low velocity
+                if pos_error < self._converge_pos and max_vel < self._converge_vel:
                     return
+
+                if time.time() > settle_deadline:
+                    raise ArmError(f"Timeout: arm did not converge (error={pos_error:.4f} m)")
 
             time.sleep(command_interval)
 
@@ -304,11 +376,8 @@ class ArmAPI:
         """
         timeout = timeout or self._timeout
 
-        # Get fresh current pose
-        for _ in range(3):
-            state = self._backend.get_state()
-            time.sleep(0.02)
-        current_pose = state.get("ee_pose", [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1])
+        # Set up Cartesian mode with keepalives to prevent command gap
+        current_pose, state = self._setup_cartesian_mode()
 
         current_x = current_pose[12]
         current_y = current_pose[13]
@@ -351,26 +420,12 @@ class ArmAPI:
             rot_time = max(abs(droll), abs(dpitch), abs(dyaw)) / 0.3  # 0.3 rad/s
             duration = max(2.0, min(10.0, max(pos_time, rot_time)))
 
-        # Set impedance mode and gains
-        self._backend.set_control_mode(self.MODE_CARTESIAN_IMPEDANCE)
-        time.sleep(0.05)
-        self._backend.set_gains(
-            cartesian_stiffness=self._DEFAULT_CART_STIFFNESS,
-            cartesian_damping=self._DEFAULT_CART_DAMPING,
-        )
-        print(f"[arm] Cartesian impedance gains: K={self._DEFAULT_CART_STIFFNESS} D={self._DEFAULT_CART_DAMPING}")
-        time.sleep(0.05)
-
-        # Send current pose first to establish command stream (avoids jump)
-        for _ in range(5):
-            self._backend.send_cartesian_pose(list(current_pose), blocking=False)
-            time.sleep(0.02)
-
         # Interpolate smoothly from start to target
         command_interval = 1.0 / self._command_rate
         motion_start_time = time.time()
         start_time = motion_start_time
 
+        settle_deadline = None
         while time.time() - start_time < timeout:
             elapsed = time.time() - motion_start_time
             t = min(1.0, elapsed / duration)
@@ -393,6 +448,9 @@ class ArmAPI:
 
             # Check if motion complete
             if t >= 1.0:
+                if settle_deadline is None:
+                    settle_deadline = time.time() + self._settle_timeout
+
                 state = self._backend.get_state()
                 ee = state.get("ee_pose", current_pose)
                 dq = state.get("dq", [0.0] * 7)
@@ -405,12 +463,87 @@ class ArmAPI:
 
                 max_vel = max(abs(v) for v in dq)
 
-                if pos_error < 0.03 and max_vel < 0.05:  # 3cm, low velocity
+                if pos_error < self._converge_pos and max_vel < self._converge_vel:
                     return
+
+                if time.time() > settle_deadline:
+                    raise ArmError(f"Timeout: arm did not converge (error={pos_error:.4f} m)")
 
             time.sleep(command_interval)
 
         raise ArmError("Timeout waiting for arm to reach target pose")
+
+    def send_joint_velocity(
+        self,
+        dq: list[float],
+        duration: float = 1.0,
+    ) -> None:
+        """Send joint velocity command for specified duration (blocking).
+
+        Streams the joint velocities at 50 Hz for the given duration,
+        then sends zero velocities to stop.
+
+        Args:
+            dq: 7 joint velocities in rad/s
+            duration: How long to send velocities in seconds (default: 1.0)
+
+        Raises:
+            ArmError: If command fails
+
+        Example:
+            arm.send_joint_velocity([0, 0, 0, 0, 0, 0.1, 0], duration=2.0)
+        """
+        if len(dq) != 7:
+            raise ArmError(f"Expected 7 joint velocities, got {len(dq)}")
+
+        self._backend.set_control_mode(self.MODE_JOINT_VELOCITY)
+        time.sleep(0.1)
+
+        command_interval = 1.0 / self._command_rate
+        start_time = time.time()
+
+        try:
+            while time.time() - start_time < duration:
+                self._backend.send_joint_velocity(list(dq))
+                time.sleep(command_interval)
+        finally:
+            self._backend.send_joint_velocity([0.0] * 7)
+
+    def send_cartesian_velocity(
+        self,
+        velocities: list[float],
+        duration: float = 1.0,
+    ) -> None:
+        """Send cartesian velocity command for specified duration (blocking).
+
+        Streams the cartesian velocities at 50 Hz for the given duration,
+        then sends zero velocities to stop.
+
+        Args:
+            velocities: 6 values [vx, vy, vz, wx, wy, wz] in m/s and rad/s
+            duration: How long to send velocities in seconds (default: 1.0)
+
+        Raises:
+            ArmError: If command fails
+
+        Example:
+            arm.send_cartesian_velocity([0, 0, 0.01, 0, 0, 0], duration=2.0)
+        """
+        if len(velocities) != 6:
+            raise ArmError(f"Expected 6 cartesian velocities, got {len(velocities)}")
+
+        self._backend.set_control_mode(self.MODE_CARTESIAN_VELOCITY)
+        time.sleep(0.1)
+
+        command_interval = 1.0 / self._command_rate
+        start_time = time.time()
+
+        try:
+            while time.time() - start_time < duration:
+                self._backend.send_cartesian_velocity(list(velocities))
+                time.sleep(command_interval)
+        finally:
+            self._backend.send_cartesian_velocity([0.0] * 6)
 
     def get_state(self) -> dict:
         """Get current arm state.
@@ -431,7 +564,7 @@ class ArmAPI:
             raise ArmError("Failed to send emergency stop command")
 
     # Home position for Franka Panda
-    HOME_POSITION = [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
+    HOME_POSITION = [0.0, -0.785, 0.0, -2.356, 0.0, 1.913, 0.785]
 
     def go_home(self, timeout: Optional[float] = None, duration: Optional[float] = None) -> None:
         """Move arm to home position with smooth interpolation (blocking).

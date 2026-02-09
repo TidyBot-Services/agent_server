@@ -96,7 +96,7 @@ def create_router(rewind_orchestrator, lease_mgr, system_logger, safety_monitor=
             result["arm_recovering"] = arm_monitor.is_recovering
         return result
 
-    @router.get("/logs")
+    @router.get("/logs", include_in_schema=False)
     async def get_logs(limit: int = 50):
         """Get recent rewind logs for dashboard display.
 
@@ -117,13 +117,13 @@ def create_router(rewind_orchestrator, lease_mgr, system_logger, safety_monitor=
         info["last_safe_waypoint_idx"] = rewind_orchestrator.find_last_safe_waypoint()
         return info
 
-    @router.post("/trajectory/clear")
+    @router.post("/trajectory/clear", include_in_schema=False)
     async def clear_trajectory():
         """Clear all recorded trajectory waypoints."""
         system_logger.clear()
         return {"success": True, "message": "Trajectory cleared"}
 
-    @router.get("/trajectory/{idx}")
+    @router.get("/trajectory/{idx}", include_in_schema=False)
     async def get_waypoint(idx: int):
         """Get waypoint by index."""
         wp = system_logger.get_waypoint(idx)
@@ -131,7 +131,7 @@ def create_router(rewind_orchestrator, lease_mgr, system_logger, safety_monitor=
             raise HTTPException(status_code=404, detail=f"Waypoint {idx} not found")
         return wp.to_dict()
 
-    @router.get("/boundary")
+    @router.get("/boundary", include_in_schema=False)
     async def get_boundary():
         """Get boundary status."""
         try:
@@ -139,7 +139,7 @@ def create_router(rewind_orchestrator, lease_mgr, system_logger, safety_monitor=
         except Exception as e:
             raise HTTPException(status_code=503, detail=str(e))
 
-    @router.get("/check")
+    @router.get("/check", include_in_schema=False)
     async def check_bounds():
         """Quick out-of-bounds check."""
         try:
@@ -235,7 +235,7 @@ def create_router(rewind_orchestrator, lease_mgr, system_logger, safety_monitor=
             "chunk_duration": cfg.chunk_duration,
         }
 
-    @router.put("/config")
+    @router.put("/config", include_in_schema=False)
     async def update_config(req: RewindConfigUpdate):
         """Update rewind config.
 
@@ -297,7 +297,7 @@ def create_router(rewind_orchestrator, lease_mgr, system_logger, safety_monitor=
             result["arm_monitor"] = arm_monitor.get_status()
         return result
 
-    @router.put("/monitor/config")
+    @router.put("/monitor/config", include_in_schema=False)
     async def update_monitor_config(req: MonitorConfigUpdate):
         """Update monitor config (dashboard compatibility)."""
         cfg = rewind_orchestrator.config
@@ -317,13 +317,13 @@ def create_router(rewind_orchestrator, lease_mgr, system_logger, safety_monitor=
             cfg.collision_grace_period = req.collision_grace_period
         return await get_monitor_status()
 
-    @router.post("/monitor/enable")
+    @router.post("/monitor/enable", include_in_schema=False)
     async def enable_auto_rewind():
         """Enable auto-rewind."""
         rewind_orchestrator.config.auto_rewind_enabled = True
         return {"auto_rewind_enabled": True}
 
-    @router.post("/monitor/disable")
+    @router.post("/monitor/disable", include_in_schema=False)
     async def disable_auto_rewind():
         """Disable auto-rewind."""
         rewind_orchestrator.config.auto_rewind_enabled = False
