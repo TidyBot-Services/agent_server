@@ -180,7 +180,7 @@ class ArmAPI:
         # Auto-adjust duration: slower to prevent velocity violations
         # At least 2 seconds per 0.5 rad (30 deg), minimum 2s
         if duration is None:
-            duration = max(2.0, min(15.0, max_delta / 0.5 * 4.0))
+            duration = max(0.5, min(15.0, max_delta / 0.5 * 4.0))
 
         # Send current position first to establish command stream (avoids jump)
         for _ in range(5):
@@ -288,7 +288,7 @@ class ArmAPI:
         # Auto-calculate duration from distance (0.1 m/s nominal speed, min 2s)
         if duration is None:
             dist = ((target_x - current_x)**2 + (target_y - current_y)**2 + (target_z - current_z)**2) ** 0.5
-            duration = max(2.0, min(10.0, dist / 0.1))
+            duration = max(0.5, min(10.0, dist / 0.1))
 
         # Interpolate smoothly from start to target
         command_interval = 1.0 / self._command_rate
@@ -418,7 +418,7 @@ class ArmAPI:
             dist = ((target_x - current_x)**2 + (target_y - current_y)**2 + (target_z - current_z)**2) ** 0.5
             pos_time = dist / 0.1  # 0.1 m/s
             rot_time = max(abs(droll), abs(dpitch), abs(dyaw)) / 0.3  # 0.3 rad/s
-            duration = max(2.0, min(10.0, max(pos_time, rot_time)))
+            duration = max(0.5, min(10.0, max(pos_time, rot_time)))
 
         # Interpolate smoothly from start to target
         command_interval = 1.0 / self._command_rate
