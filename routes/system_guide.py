@@ -99,6 +99,11 @@ def generate_guide() -> dict:
         sdk_modules.append("yolo")
     except ImportError:
         pass
+    try:
+        from robot_sdk.display import DisplayAPI
+        sdk_modules.append("display")
+    except ImportError:
+        pass
 
     return {
         "title": "TidyBot Getting Started Guide",
@@ -178,6 +183,16 @@ def generate_guide() -> dict:
                     "path": "/code/execute",
                     "body": '{"code": "from robot_sdk import arm\\narm.move_joints([0,0,0,0,0,0,0])", "timeout": 60}',
                 },
+                "validate": {
+                    "method": "POST",
+                    "path": "/code/validate",
+                    "body": '{"code": "from robot_sdk import arm\\narm.move_joints([0,0,0,0,0,0,0])"}',
+                    "description": (
+                        "Validate code without executing it. Checks for dangerous "
+                        "patterns (shell commands, network access, file deletion). "
+                        "No lease required."
+                    ),
+                },
                 "sdk_modules": sdk_modules,
                 "sdk_reference": "/code/sdk/markdown",
                 "check_status": {"method": "GET", "path": "/code/status"},
@@ -224,6 +239,50 @@ def generate_guide() -> dict:
                         "description": "Streaming camera feeds",
                     },
                 ],
+            },
+            "display": {
+                "title": "Display",
+                "description": (
+                    "Control the robot's face screen — show text, images, "
+                    "plots, and change facial expressions. The face GUI is "
+                    "served at /face and updates live via WebSocket. No lease "
+                    "required."
+                ),
+                "expressions": [
+                    "happy", "thinking", "sad", "neutral",
+                    "excited", "concerned",
+                ],
+                "endpoints": [
+                    {
+                        "method": "POST",
+                        "path": "/display/text",
+                        "description": "Show text on the face display",
+                        "body": '{"text": "Looking for the cup...", "size": "large"}',
+                    },
+                    {
+                        "method": "POST",
+                        "path": "/display/face",
+                        "description": "Change face expression",
+                        "body": '{"expression": "thinking"}',
+                    },
+                    {
+                        "method": "POST",
+                        "path": "/display/image",
+                        "description": "Show a base64-encoded image (max ~2MB)",
+                        "body": '{"image_b64": "...", "mime_type": "image/png"}',
+                    },
+                    {
+                        "method": "POST",
+                        "path": "/display/clear",
+                        "description": "Clear content and revert face to default",
+                        "body": "{}",
+                    },
+                ],
+                "sdk_note": (
+                    "In submitted code, use `from robot_sdk import display` for "
+                    "a friendlier API: display.show_text(), display.show_face(), "
+                    "display.show_image(), display.show_plot(), display.clear()"
+                ),
             },
         },
     }
@@ -272,6 +331,15 @@ def _render_markdown(guide: dict) -> str:
     md += code["submit"]["body"].replace("\\n", "\n")
     md += "\n```\n\n"
 
+    if "validate" in code:
+        v = code["validate"]
+        md += "### Validate Code\n\n"
+        md += f"{v['description']}\n\n"
+        md += f"**`{v['method']} {v['path']}`**\n\n"
+        md += "```json\n"
+        md += v["body"].replace("\\n", "\n")
+        md += "\n```\n\n"
+
     md += "### Available SDK Modules\n\n"
     for mod in code["sdk_modules"]:
         md += f"- `{mod}`\n"
@@ -296,6 +364,25 @@ def _render_markdown(guide: dict) -> str:
     for ep in state["endpoints"]:
         md += f"| `{ep['method']}` | `{ep['path']}` | {ep['description']} |\n"
     md += "\n"
+
+    # Display section
+    if "display" in guide["sections"]:
+        disp = guide["sections"]["display"]
+        md += f"## {disp['title']}\n\n"
+        md += f"{disp['description']}\n\n"
+
+        md += "### Expressions\n\n"
+        md += ", ".join(f"`{e}`" for e in disp["expressions"])
+        md += "\n\n"
+
+        md += "### Endpoints\n\n"
+        md += "| Method | Path | Description |\n"
+        md += "|--------|------|-------------|\n"
+        for ep in disp["endpoints"]:
+            md += f"| `{ep['method']}` | `{ep['path']}` | {ep['description']} |\n"
+        md += "\n"
+
+        md += f"> {disp['sdk_note']}\n\n"
 
     # Links
     md += "## More Documentation\n\n"
