@@ -98,7 +98,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #888; }
   .legend-dot { width: 12px; height: 12px; border-radius: 50%; }
   .legend-dot.current { background: #4caf50; box-shadow: 0 0 8px #4caf50; }
-  .legend-dot.path { background: #1976d2; }
+  .legend-dot.odom-path { background: #64b5f6; }
+  .legend-dot.mocap-path { background: #0d47a1; }
   .legend-dot.start { background: #9c27b0; }
   .legend-line { width: 20px; height: 2px; }
   .legend-line.boundary { background: #f44336; border: 1px dashed #f44336; }
@@ -123,13 +124,30 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .activity-badge.recovering { background: #b71c1c; color: #ef9a9a; animation: pulse 1s infinite; }
 </style></head><body>
 <h1>Service Dashboard<span id="dry-run-badge" class="dry-run-badge" style="display:none">DRY-RUN</span></h1>
-<p class="subtitle">TidyBot Agent Server — Backend Service Manager</p>
+<p class="subtitle">TidyBot Agent Server — Backend Service Manager
+  <span style="margin-left: 16px;">
+    <a href="/face" target="_blank" style="color: #64b5f6; text-decoration: none; margin-right: 12px;">Face Display ↗</a>
+    <a href="/cameras" target="_blank" style="color: #64b5f6; text-decoration: none;">Cameras ↗</a>
+  </span>
+</p>
 
 <!-- Row 1: Current State -->
 <div class="state-section">
   <div class="state-grid">
     <div class="state-card">
-      <h3>Base Odometry</h3>
+      <h3>Base Odom</h3>
+      <div class="state-row"><span class="state-label">X</span><span class="state-value" id="odom-x">—</span></div>
+      <div class="state-row"><span class="state-label">Y</span><span class="state-value" id="odom-y">—</span></div>
+      <div class="state-row"><span class="state-label">Theta</span><span class="state-value" id="odom-theta">—</span></div>
+    </div>
+    <div class="state-card">
+      <h3>Base Mocap</h3>
+      <div class="state-row"><span class="state-label">X</span><span class="state-value" id="mocap-x">—</span></div>
+      <div class="state-row"><span class="state-label">Y</span><span class="state-value" id="mocap-y">—</span></div>
+      <div class="state-row"><span class="state-label">Theta</span><span class="state-value" id="mocap-theta">—</span></div>
+    </div>
+    <div class="state-card">
+      <h3>Base Pose (Active)</h3>
       <div class="state-row"><span class="state-label">X</span><span class="state-value" id="base-x">—</span></div>
       <div class="state-row"><span class="state-label">Y</span><span class="state-value" id="base-y">—</span></div>
       <div class="state-row"><span class="state-label">Theta</span><span class="state-value" id="base-theta">—</span></div>
@@ -234,8 +252,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <canvas id="trajectory-canvas"></canvas>
     </div>
     <div class="trajectory-legend">
-      <div class="legend-item"><div class="legend-dot current"></div>Current</div>
-      <div class="legend-item"><div class="legend-dot path"></div>Path</div>
+      <div class="legend-item"><div class="legend-dot current" style="border-radius: 3px; width: 10px; height: 14px;"></div>Robot</div>
+      <div class="legend-item"><div class="legend-dot odom-path"></div>Odom</div>
+      <div class="legend-item"><div class="legend-dot mocap-path"></div>Mocap</div>
       <div class="legend-item"><div class="legend-dot start"></div>Start</div>
       <div class="legend-item"><div class="legend-line boundary"></div>Boundary</div>
     </div>
@@ -302,6 +321,21 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <table>
   <thead><tr><th>Service</th><th>Status</th><th>PID</th><th>Uptime</th><th>Actions</th></tr></thead>
   <tbody id="tbl"><tr><td colspan="5" style="text-align:center;color:#666">Loading...</td></tr></tbody>
+</table>
+<!-- Port Reference -->
+<table style="margin-top: 16px;">
+  <thead><tr><th>Port</th><th>Service</th><th>Protocol</th><th>Bind</th></tr></thead>
+  <tbody>
+    <tr><td style="font-family: monospace;">8080</td><td>Agent Server</td><td>HTTP / WebSocket</td><td>0.0.0.0</td></tr>
+    <tr><td style="font-family: monospace;">50000</td><td>Base Server</td><td>RPC</td><td>localhost</td></tr>
+    <tr><td style="font-family: monospace;">5555</td><td>Franka Server (commands)</td><td>ZMQ</td><td>localhost</td></tr>
+    <tr><td style="font-family: monospace;">5556</td><td>Franka Server (state)</td><td>ZMQ</td><td>localhost</td></tr>
+    <tr><td style="font-family: monospace;">5557</td><td>Franka Server (stream)</td><td>ZMQ</td><td>localhost</td></tr>
+    <tr><td style="font-family: monospace;">5570</td><td>Gripper Server (commands)</td><td>ZMQ</td><td>localhost</td></tr>
+    <tr><td style="font-family: monospace;">5571</td><td>Gripper Server (state)</td><td>ZMQ</td><td>localhost</td></tr>
+    <tr><td style="font-family: monospace;">5580</td><td>Camera Server</td><td>WebSocket</td><td>localhost</td></tr>
+    <tr><td style="font-family: monospace;">5590</td><td>Mocap Server</td><td>ZMQ</td><td>localhost</td></tr>
+  </tbody>
 </table>
 <p class="refresh-info">Auto-refreshes every 2 seconds</p>
 <script>
@@ -387,8 +421,35 @@ async function pollState() {
     const resp = await fetch("/state");
     const state = await resp.json();
 
-    // Base odometry
+    // Base state
     const base = state.base || {};
+
+    // Raw odometry
+    const odom = base.odom_pose || [0, 0, 0];
+    document.getElementById("odom-x").textContent = odom[0].toFixed(3) + " m";
+    document.getElementById("odom-y").textContent = odom[1].toFixed(3) + " m";
+    document.getElementById("odom-theta").textContent = (odom[2] * 180 / Math.PI).toFixed(1) + "°";
+
+    // Raw mocap
+    const mocap = base.mocap_pose;
+    const mocapTracking = base.mocap_tracking || false;
+    if (mocap && mocapTracking) {
+      document.getElementById("mocap-x").textContent = mocap[0].toFixed(3) + " m";
+      document.getElementById("mocap-y").textContent = mocap[1].toFixed(3) + " m";
+      document.getElementById("mocap-theta").textContent = (mocap[2] * 180 / Math.PI).toFixed(1) + "°";
+      document.getElementById("mocap-x").classList.remove("disconnected");
+      document.getElementById("mocap-y").classList.remove("disconnected");
+      document.getElementById("mocap-theta").classList.remove("disconnected");
+    } else {
+      document.getElementById("mocap-x").textContent = "—";
+      document.getElementById("mocap-y").textContent = "—";
+      document.getElementById("mocap-theta").textContent = "—";
+      document.getElementById("mocap-x").classList.add("disconnected");
+      document.getElementById("mocap-y").classList.add("disconnected");
+      document.getElementById("mocap-theta").classList.add("disconnected");
+    }
+
+    // Active pose (selected source)
     const pose = base.pose || [0, 0, 0];
     document.getElementById("base-x").textContent = pose[0].toFixed(3) + " m";
     document.getElementById("base-y").textContent = pose[1].toFixed(3) + " m";
@@ -816,24 +877,34 @@ function drawTrajectory(waypoints, currentPose) {
   ctx.strokeRect(rx, ry, Math.abs(c2.x - c1.x), Math.abs(c2.y - c1.y));
   ctx.setLineDash([]);
 
-  // Draw trajectory path
+  // Draw odom trajectory path (lighter blue)
   if (waypoints && waypoints.length > 1) {
-    ctx.strokeStyle = "#1976d2";
+    let hasOdom = false;
+    ctx.strokeStyle = "#64b5f6";
     ctx.lineWidth = 2;
     ctx.beginPath();
-
     for (let i = 0; i < waypoints.length; i++) {
-      const wp = waypoints[i];
-      const pose = wp.base_pose || [0, 0, 0];
+      const pose = waypoints[i].odom_pose;
+      if (!pose) continue;
       const p = worldToCanvas(pose[0], pose[1]);
-
-      if (i === 0) {
-        ctx.moveTo(p.x, p.y);
-      } else {
-        ctx.lineTo(p.x, p.y);
-      }
+      if (!hasOdom) { ctx.moveTo(p.x, p.y); hasOdom = true; }
+      else ctx.lineTo(p.x, p.y);
     }
-    ctx.stroke();
+    if (hasOdom) ctx.stroke();
+
+    // Draw mocap trajectory path (darker blue)
+    let hasMocap = false;
+    ctx.strokeStyle = "#0d47a1";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < waypoints.length; i++) {
+      const pose = waypoints[i].mocap_pose;
+      if (!pose) continue;
+      const p = worldToCanvas(pose[0], pose[1]);
+      if (!hasMocap) { ctx.moveTo(p.x, p.y); hasMocap = true; }
+      else ctx.lineTo(p.x, p.y);
+    }
+    if (hasMocap) ctx.stroke();
 
     // Draw start position
     if (waypoints.length > 0) {
@@ -846,29 +917,50 @@ function drawTrajectory(waypoints, currentPose) {
     }
   }
 
-  // Draw current position
+  // Draw robot icon at current position
   if (currentPose && currentPose.length >= 2) {
     const p = worldToCanvas(currentPose[0], currentPose[1]);
-
-    // Draw direction indicator (behind-robot view)
-    // World forward = (cos(theta), sin(theta)) → canvas (-sin(theta), -cos(theta))
     const theta = currentPose[2] || 0;
-    const arrowLen = 15;
-    ctx.strokeStyle = "#4caf50";
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.moveTo(p.x, p.y);
-    ctx.lineTo(p.x - arrowLen * Math.sin(theta), p.y - arrowLen * Math.cos(theta));
-    ctx.stroke();
 
-    // Draw position dot
+    // "Behind the robot" view: world +X → screen up, world +Y → screen left
+    // Canvas rotation angle: -theta maps world heading to screen
+    const canvasAngle = -theta;
+
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(canvasAngle);
+
+    // Body: rounded rectangle (forward = up in local frame = -Y on canvas)
+    const bw = 10, bh = 16; // half-widths
     ctx.fillStyle = "#4caf50";
     ctx.shadowColor = "#4caf50";
     ctx.shadowBlur = 10;
     ctx.beginPath();
-    ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+    ctx.roundRect(-bw, -bh, bw * 2, bh * 2, 3);
     ctx.fill();
     ctx.shadowBlur = 0;
+
+    // Wheels: two small rects on each side
+    ctx.fillStyle = "#2e7d32";
+    ctx.fillRect(-bw - 3, -bh + 3, 3, 8);  // left-front
+    ctx.fillRect(-bw - 3, bh - 11, 3, 8);   // left-rear
+    ctx.fillRect(bw, -bh + 3, 3, 8);         // right-front
+    ctx.fillRect(bw, bh - 11, 3, 8);          // right-rear
+
+    // Forward arrow inside body
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 2;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    ctx.moveTo(0, 6);
+    ctx.lineTo(0, -8);
+    ctx.lineTo(-4, -4);
+    ctx.moveTo(0, -8);
+    ctx.lineTo(4, -4);
+    ctx.stroke();
+
+    ctx.restore();
   }
 
   // Draw axis labels (behind-robot view: X up, Y left)
