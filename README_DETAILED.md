@@ -1,6 +1,6 @@
-# Agent Guide
+# Detailed Reference
 
-Reference for AI agents and developers writing code that runs on the robot. If you're looking for the project overview, see the [README](README.md).
+Full SDK reference, API documentation, and working examples for anyone writing code that talks to this server — whether you're an AI agent or a human. For the project overview, see the [README](README.md).
 
 The server auto-generates SDK docs from the actual source code. For always-current reference:
 
