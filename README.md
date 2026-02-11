@@ -1,266 +1,183 @@
 # tidybot-agent-server
 
-Hardware server for the TidyBot robot fleet. Acts as the gateway between AI agents (e.g. [OpenClaw](https://github.com/anthropics/openclaw)) and the physical robot — a Franka Panda arm on a holonomic mobile base.
+The agent server is the central piece of the [TidyBot Universe](https://tidybot-services.github.io/) — it's the glue between AI agents and the physical robot. Agents observe the world through cameras, decide what to do, then submit Python code that moves the arm, drives the base, and operates the gripper. The server handles the messy parts: backend connections, safety envelopes, trajectory recording, and making sure only one operator controls the robot at a time.
+
+Built on FastAPI. Runs on the robot's onboard computer. Talks to hardware over ZMQ and RPC.
 
 ```
-Agent ──► Hardware Server ──► BaseServer  (mobile base, Python RPC)
-           (FastAPI)       ──► FrankaServer (arm, C++/ZMQ 1 kHz)
-                           ──► Controller   (whole-body control)
+                ┌─────────────────────────────────────────────────┐
+                │              tidybot-agent-server                │
+  AI Agent ────►│  ┌──────────┐  ┌───────┐  ┌────────────────┐   │
+  (Skills)      │  │  Lease   │  │Safety │  │  Code Executor │   │
+                │  │  Manager │  │Envelope│  │  (robot_sdk)   │   │
+                │  └──────────┘  └───────┘  └───────┬────────┘   │
+                │                                    │            │
+                │  ┌─────────┬──────────┬────────┬───┘            │
+                │  ▼         ▼          ▼        ▼               │
+                │ Franka    Base     Gripper   Camera             │
+                │ (ZMQ)    (RPC)     (ZMQ)    (WS)               │
+                └──┬─────────┬──────────┬────────┬───────────────┘
+                   ▼         ▼          ▼        ▼
+                 Panda    Holonomic   Robotiq  RealSense
+                  Arm      Base       2F-85    D405/D435
 ```
 
-## Features
+This repo is part of [TidyBot-Services](https://github.com/TidyBot-Services) — shared infrastructure for the TidyBot fleet. Skills that run on this server live in [TidyBot-Skills](https://github.com/TidyBot-Skills) — things like [pick-up-object](https://github.com/TidyBot-Skills/pick-up-object), [arm-sweep](https://github.com/TidyBot-Skills/arm-sweep), and [count-people-in-room](https://github.com/TidyBot-Skills/count-people-in-room).
 
-- **Service Manager** — auto-start/stop/monitor backend services with dependencies
-- **Web Dashboard** — real-time service status and controls at `/services/dashboard`
-- **Lease system** — one operator at a time, with idle detection, queue, and auto-revocation
-- **Safety envelope** — workspace bounds, velocity limits, gripper force caps
-- **Trajectory recording** — logs waypoints after each position command
-- **Reset via reversal** — undo the last N% of moves by replaying the trajectory backwards
-- **WebSocket streaming** — real-time state (`/ws/state`) and command feedback (`/ws/feedback`)
-- **Graceful degradation** — server continues running if backends fail
-- **Dry-run mode** — simulated backends for development without hardware
+> **Looking for the full API and SDK docs?** See [README_DETAILED.md](README_DETAILED.md) for the complete SDK reference, API tables, response schemas, and working examples.
+
+## How it works
+
+1. **Observe** — agents connect to `/ws/state` or `/ws/cameras` to see what the robot sees
+2. **Acquire a lease** — `POST /lease/acquire` for exclusive control (one operator at a time)
+3. **Submit code** — `POST /code/execute` with Python that uses `robot_sdk`
+4. **Poll for completion** — `GET /code/status` until it finishes
+5. **Release the lease** — `POST /lease/release` (robot auto-rewinds to starting position)
+
+The submitted code runs in a sandboxed subprocess with access to a high-level SDK. All SDK methods are synchronous and blocking — `arm.move_to_pose(...)` doesn't return until the arm gets there. If something goes wrong, the robot holds its current pose.
+
+```python
+# This code gets submitted via POST /code/execute
+from robot_sdk import arm, gripper, sensors
+
+joints = sensors.get_arm_joints()
+print(f"Starting at: {joints}")
+
+gripper.activate()
+gripper.open()
+arm.move_to_pose(x=0.5, y=0.0, z=0.15)
+gripper.grasp(force=100)
+arm.move_delta(dz=0.2, frame="ee")
+
+print("Pick complete!")
+```
 
 ## Quickstart
 
 ```bash
-# Install dependencies (Python 3.10+)
+# Install (Python 3.10+)
 pip install -r requirements.txt
 
-# Run with auto-start (recommended)
-python server.py --auto-start-services
+# Development — no hardware needed
+python3 server.py --dry-run
 
-# Run with simulated backends
-python server.py --dry-run
+# Production — with hardware services
+python3 server.py --auto-start-services
 
-# Run without service manager
-python server.py --host 0.0.0.0 --port 8080
+# Production — hardware managed externally (recommended)
+python3 server.py --no-service-manager
 ```
 
-Open the dashboard: **http://localhost:8080/services/dashboard**
+Dashboard at **http://localhost:8080/services/dashboard** — SDK docs at **http://localhost:8080/code/sdk/markdown**
 
-## CLI Options
+## Key concepts
 
-```
-python server.py [OPTIONS]
+**Lease system** — Only one operator at a time. Leases have idle detection and auto-revoke after timeout. Other agents queue and get promoted automatically. When a lease is released, the robot rewinds to its starting position. To run multiple code blocks without rewinding between them, keep the same lease.
 
-Options:
-  --host HOST              Bind address (default: 0.0.0.0)
-  --port PORT              Port number (default: 8080)
-  --dry-run                Use simulated backends (no hardware)
-  --auto-start-services    Auto-start backend services on startup
-  --no-service-manager     Disable service management entirely
-```
+**Code execution** — Agents don't send raw motor commands. They submit Python code that uses `robot_sdk` — a high-level library with modules for `arm`, `base`, `gripper`, `sensors`, and `rewind`. The code runs in a subprocess with a 5-minute default timeout. Output from `print()` is captured and returned in the result.
 
-## Service Manager
+**Trajectory recording** — Every position command is logged as a waypoint. This powers the rewind system: undo the last N steps, N%, or rewind all the way home. The safety monitor can auto-rewind when workspace bounds are violated.
 
-Manages backend processes with health monitoring, log capture, and dependency tracking.
+**Safety envelope** — Workspace bounds, velocity limits, and gripper force caps are enforced. If the arm leaves its safe workspace, the safety monitor can automatically trigger a rewind.
 
-### Managed Services
+**Graceful degradation** — The server keeps running even if backends are down. `GET /health` shows what's connected. SDK methods for unavailable backends print a warning but don't crash.
 
-| Key | Name | Description | Dependencies |
-|-----|------|-------------|--------------|
-| `base_server` | Base Server | Mobile base RPC server | None |
-| `franka_server` | Franka Arm Server | Arm ZMQ control server | None |
-| `controller` | Whole-Body Controller | Coordinated arm+base control | `base_server`, `franka_server` |
+**Dry-run mode** — `--dry-run` swaps real backends for simulated ones. Everything works the same — leases, code execution, the dashboard — but no hardware moves. Useful for development and testing.
 
-### Service Dependencies
+## Web dashboard
 
-The controller depends on both `base_server` and `franka_server`:
-- **Won't start** if either dependency is not running
-- **Auto-stops** if either dependency crashes or is stopped
+Access at **http://localhost:8080/services/dashboard**. Shows real-time status for all backend services, with start/stop/restart buttons and live log output. Also includes a safety monitor panel with auto-rewind toggle, manual rewind controls, and a 2D trajectory visualization of the base path.
 
-### Service API
+## Managed services
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/services` | GET | List all services with status |
-| `/services/{name}` | GET | Get specific service status |
-| `/services/{name}/start` | POST | Start a service |
-| `/services/{name}/stop` | POST | Stop a service |
-| `/services/{name}/restart` | POST | Restart a service |
-| `/services/{name}/logs?lines=50` | GET | Get recent log output |
-| `/services/dashboard` | GET | Web dashboard UI |
+When using `--auto-start-services`, the server manages these backend processes:
 
-### Example
+| Service | Key | Dependencies |
+|---------|-----|--------------|
+| Robot Unlock | `unlock` | — |
+| Base Server | `base_server` | — |
+| Franka Arm Server | `franka_server` | `unlock` |
+| Gripper Server | `gripper_server` | — |
+| Camera Server | `camera_server` | — |
 
-```bash
-# List all services
-curl localhost:8080/services
+Dependencies are enforced: `franka_server` won't start without `unlock`, and auto-stops if `unlock` goes down. Health checks run every 5 seconds. Last 100 lines of logs are kept per service.
 
-# Start the controller
-curl -X POST localhost:8080/services/controller/start
+> **Note:** The service manager's polling can interfere with backend services. For production, prefer managing services externally with `start_robot.sh` and running the server with `--no-service-manager`.
 
-# View logs
-curl "localhost:8080/services/controller/logs?lines=20"
-
-# Stop base_server (controller auto-stops due to dependency)
-curl -X POST localhost:8080/services/base_server/stop
-```
-
-### Service Status Response
-
-```json
-{
-  "key": "base_server",
-  "name": "Base Server",
-  "running": true,
-  "pid": 12345,
-  "uptime": 120,
-  "dry_run": false
-}
-```
-
-## State API
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Server and backend status |
-| `/state` | GET | Full robot state snapshot |
-| `/state/cameras` | GET | Latest camera frame (JPEG) |
-| `/trajectory` | GET | Recorded waypoint history |
-| `/ws/state` | WS | Streaming state at configurable Hz |
-| `/ws/feedback` | WS | Command ack/result events |
-
-### Health Response
-
-```json
-{
-  "status": "ok",
-  "lease": {"holder": null, "queue_length": 0},
-  "backends": {
-    "base": true,
-    "franka": false,
-    "cameras": false
-  }
-}
-```
-
-## Lease API
-
-Code execution (`POST /code/execute`) requires an `X-Lease-Id` header.
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/lease/acquire` | POST | Acquire or queue for the operator lease |
-| `/lease/release` | POST | Release the current lease |
-| `/lease/extend` | POST | Reset the idle timer |
-| `/lease/status` | GET | Current holder, remaining time, and queue with positions |
-
-### Lease Status Response
-
-```json
-{
-  "holder": "my-agent",
-  "remaining_s": 245.3,
-  "queue_length": 2,
-  "queue": [
-    {"position": 1, "holder": "waiting-agent-1"},
-    {"position": 2, "holder": "waiting-agent-2"}
-  ]
-}
-```
-
-**Note**: `lease_id` is intentionally excluded from status for security. Holders receive their `lease_id` when acquiring and can retrieve it by calling acquire again with the same holder name.
-
-## Code Execution API
-
-All robot control is done via code execution. Submit Python code that runs with access to `robot_sdk`.
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `POST /code/execute` | POST | Submit Python code (requires lease) |
-| `POST /code/stop` | POST | Stop running code (requires lease) |
-| `GET /code/status` | GET | Check execution status |
-| `GET /code/result` | GET | Get result from last execution |
-| `GET /code/sdk` | GET | Auto-generated SDK documentation (JSON) |
-| `GET /code/sdk/markdown` | GET | SDK documentation as markdown |
-
-## Example Session
-
-```bash
-# Acquire lease
-LEASE=$(curl -s -X POST localhost:8080/lease/acquire \
-  -H 'Content-Type: application/json' \
-  -d '{"holder":"my-agent"}' | jq -r .lease_id)
-
-# Move the base via code execution
-curl -X POST localhost:8080/code/execute \
-  -H "Content-Type: application/json" \
-  -H "X-Lease-Id: $LEASE" \
-  -d '{"code": "from robot_sdk import base\nbase.move_to_pose(1, 0, 0)"}'
-
-# Check trajectory
-curl localhost:8080/trajectory
-
-# Undo last 50% of moves via rewind API
-curl -X POST localhost:8080/rewind/percentage \
-  -H "Content-Type: application/json" \
-  -H "X-Lease-Id: $LEASE" \
-  -d '{"percentage": 50.0}'
-
-# Release lease
-curl -X POST localhost:8080/lease/release \
-  -H "Content-Type: application/json" \
-  -d "{\"lease_id\": \"$LEASE\"}"
-```
-
-## Architecture
-
-```
-tidybot-agent-server/
-├── server.py              # FastAPI app wiring
-├── config.py              # Configuration dataclasses, service definitions
-├── services.py            # ServiceManager — process lifecycle, health, dependencies
-├── state.py               # StateAggregator — polls backends
-├── trajectory.py          # TrajectoryRecorder — waypoint history
-├── lease.py               # LeaseManager — queue + idle detection
-├── safety.py              # SafetyEnvelope — bounds checking
-├── backends/
-│   ├── base.py            # Mobile base RPC client
-│   ├── franka.py          # Franka arm ZMQ client
-│   └── cameras.py         # Camera capture
-├── routes/
-│   ├── code_routes.py     # POST /code/* endpoints
-│   ├── state_routes.py    # GET /state, /trajectory, /health
-│   ├── lease_routes.py    # Lease management endpoints
-│   ├── service_routes.py  # Service management + dashboard
-│   └── ws.py              # WebSocket handlers
-└── requirements.txt
-```
-
-## Configuration
-
-Service definitions in `config.py`:
-
-```python
-ServiceDefinition(
-    name="Whole-Body Controller",
-    cmd="python3 qp_arm_only.py",
-    cwd="/path/to/tidybot2",
-    shell_prefix="source /path/to/venv/bin/activate && ",
-    kill_patterns=["qp_arm_only.py"],
-    depends_on=["base_server", "franka_server"],
-)
-```
-
-### ServiceDefinition Fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | str | Display name |
-| `cmd` | str | Command to run |
-| `cwd` | str | Working directory |
-| `shell_prefix` | str | Shell setup (e.g., venv activation) |
-| `kill_patterns` | list[str] | Patterns for pkill cleanup |
-| `auto_restart` | bool | Auto-restart on crash |
-| `depends_on` | list[str] | Service keys this depends on |
-
-## Ports
+## Network ports
 
 | Port | Service |
 |------|---------|
-| 8080 | Agent server (HTTP/WebSocket) |
+| 8080 | Agent server (HTTP + WebSocket) |
 | 50000 | Base server (RPC) |
-| 5555 | Franka server (ZMQ commands) |
-| 5556 | Franka server (ZMQ state) |
-| 5557 | Franka server (ZMQ stream) |
+| 5555–5557 | Franka server (ZMQ cmd/state/stream) |
+| 5580+ | Camera servers (WebSocket) |
+
+## Project structure
+
+```
+├── server.py                  # FastAPI application
+├── config.py                  # Configuration and service definitions
+├── code_executor.py           # Subprocess code execution engine
+├── lease.py                   # Lease manager (queue, idle detection)
+├── state.py                   # State aggregator (polls backends)
+├── safety.py                  # Safety envelope (bounds, limits)
+├── services.py                # Service manager (process lifecycle)
+│
+├── robot_sdk/                 # SDK available in submitted code
+│   ├── arm.py                 #   Joint/Cartesian control
+│   ├── base.py                #   Mobile base control
+│   ├── gripper.py             #   Gripper control
+│   ├── sensors.py             #   Read-only state access
+│   ├── rewind.py              #   Trajectory reversal
+│   ├── display.py             #   Display control
+│   └── yolo.py                #   YOLO object detection
+│
+├── backends/                  # Hardware backend clients
+│   ├── franka.py              #   Franka arm (ZMQ)
+│   ├── base.py                #   Mobile base (RPC)
+│   ├── gripper.py             #   Robotiq gripper (ZMQ)
+│   └── cameras.py             #   RealSense cameras (WebSocket)
+│
+├── routes/                    # API route handlers
+│   ├── code_routes.py         #   /code/* endpoints
+│   ├── lease_routes.py        #   /lease/* endpoints
+│   ├── state_routes.py        #   /state, /health, /trajectory
+│   ├── rewind_routes.py       #   /rewind/* endpoints
+│   ├── service_routes.py      #   /services/* + web dashboard
+│   ├── ws.py                  #   WebSocket handlers
+│   └── sdk_docs.py            #   Auto-generated SDK docs
+│
+├── examples/                  # Example scripts
+│   ├── simple_move.py         #   Basic arm + base movement
+│   └── pick_and_place.py      #   Pick-and-place sequence
+│
+└── tests/                     # Test suite
+    ├── test_api.sh            #   API integration tests
+    ├── test_all_sdk_motions.py #  Comprehensive SDK motion tests
+    └── ...                    #   Lease, rewind, motion tests
+```
+
+## Testing
+
+```bash
+# API endpoint tests (bash)
+tests/test_api.sh                           # Skip gripper
+tests/test_api.sh --with-gripper            # Include gripper
+
+# SDK motion tests (Python, needs hardware or dry-run)
+python3 tests/test_all_sdk_motions.py
+python3 tests/test_all_sdk_motions.py --only-queue   # Just queue concurrency
+```
+
+## CLI options
+
+```
+python3 server.py [OPTIONS]
+
+  --host HOST              Bind address (default: 0.0.0.0)
+  --port PORT              Port number (default: 8080)
+  --dry-run                Simulated backends, no hardware
+  --auto-start-services    Manage backend processes (experimental)
+  --no-service-manager     Disable service management (use with start_robot.sh)
+```
