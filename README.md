@@ -1,6 +1,6 @@
 # tidybot-agent-server
 
-The agent server is the central piece of the [TidyBot Universe](https://tidybot-services.github.io/tidybot-army-timeline/) — it's the glue between AI agents and the physical robot. Agents observe the world through cameras, decide what to do, then submit Python code that moves the arm, drives the base, and operates the gripper. The server handles the messy parts: backend connections, safety envelopes, trajectory recording, and making sure only one operator controls the robot at a time.
+The agent server is the central piece of the [TidyBot Universe](https://tidybot-services.github.io/) — it's the glue between AI agents and the physical robot. Agents observe the world through cameras, decide what to do, then submit Python code that moves the arm, drives the base, and operates the gripper. The server handles the messy parts: backend connections, safety envelopes, trajectory recording, and making sure only one operator controls the robot at a time.
 
 Built on FastAPI. Runs on the robot's onboard computer. Talks to hardware over ZMQ and RPC.
 
