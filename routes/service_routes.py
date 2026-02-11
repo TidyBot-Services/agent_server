@@ -13,7 +13,7 @@ from services import ServiceManager
 router = APIRouter(prefix="/services", tags=["services"])
 
 DASHBOARD_HTML = r"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Service Dashboard</title>
+<html><head><meta charset="utf-8"><title>💻 Service Dashboard</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #1a1a2e; color: #eee; padding: 24px; }
@@ -127,7 +127,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <p class="subtitle">TidyBot Agent Server — Backend Service Manager
   <span style="margin-left: 16px;">
     <a href="/face" target="_blank" style="color: #64b5f6; text-decoration: none; margin-right: 12px;">Face Display ↗</a>
-    <a href="/cameras" target="_blank" style="color: #64b5f6; text-decoration: none;">Cameras ↗</a>
+    <a id="camera-link" href="#" target="_blank" style="color: #64b5f6; text-decoration: none;">Cameras ↗</a>
+    <script>document.getElementById('camera-link').href = 'http://' + window.location.hostname + ':5581';</script>
   </span>
 </p>
 
@@ -334,6 +335,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <tr><td style="font-family: monospace;">5570</td><td>Gripper Server (commands)</td><td>ZMQ</td><td>localhost</td></tr>
     <tr><td style="font-family: monospace;">5571</td><td>Gripper Server (state)</td><td>ZMQ</td><td>localhost</td></tr>
     <tr><td style="font-family: monospace;">5580</td><td>Camera Server</td><td>WebSocket</td><td>localhost</td></tr>
+    <tr><td style="font-family: monospace;">5581</td><td>Camera Dashboard</td><td>HTTP</td><td>0.0.0.0</td></tr>
     <tr><td style="font-family: monospace;">5590</td><td>Mocap Server</td><td>ZMQ</td><td>localhost</td></tr>
   </tbody>
 </table>
