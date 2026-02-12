@@ -204,6 +204,41 @@ def generate_guide() -> dict:
                     "Hold the same lease across multiple executions to avoid rewind between them",
                 ],
             },
+            "monitoring": {
+                "title": "Monitoring During Execution",
+                "description": (
+                    "While code is running (GET /code/status returns running), "
+                    "actively monitor the robot instead of waiting blindly."
+                ),
+                "tips": [
+                    {
+                        "name": "Camera frames",
+                        "description": (
+                            "Poll `GET /cameras/{id}/frame` to see what the robot "
+                            "sees. Send frames to a VLM to assess whether the task "
+                            "is progressing correctly."
+                        ),
+                    },
+                    {
+                        "name": "Terminal output",
+                        "description": (
+                            "Poll `GET /code/result` for live stdout/stderr — "
+                            "print() statements in your code show up here."
+                        ),
+                    },
+                    {
+                        "name": "Robot state",
+                        "description": (
+                            "Poll `GET /state` or stream via `WS /ws/state` for "
+                            "joint positions, base pose, and gripper status."
+                        ),
+                    },
+                ],
+                "note": (
+                    "If something looks wrong, stop execution with "
+                    "`POST /code/stop` and use rewind to undo."
+                ),
+            },
             "state_observation": {
                 "title": "State & Observation",
                 "description": "Read robot state and camera feeds. No lease required.",
@@ -353,6 +388,16 @@ def _render_markdown(guide: dict) -> str:
     md += "### Check Results\n\n"
     md += f"- `{code['check_status']['method']} {code['check_status']['path']}` — Is code still running?\n"
     md += f"- `{code['get_result']['method']} {code['get_result']['path']}` — stdout, stderr, exit code\n\n"
+
+    # Monitoring section
+    if "monitoring" in guide["sections"]:
+        mon = guide["sections"]["monitoring"]
+        md += f"## {mon['title']}\n\n"
+        md += f"{mon['description']}\n\n"
+        for tip in mon["tips"]:
+            md += f"- **{tip['name']}:** {tip['description']}\n"
+        md += "\n"
+        md += f"> {mon['note']}\n\n"
 
     # State & Observation section
     state = guide["sections"]["state_observation"]
