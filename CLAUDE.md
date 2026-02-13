@@ -23,6 +23,35 @@ Options:
   --no-service-manager     Disable service management entirely (recommended with start_robot.sh)
 ```
 
+## API Key Authentication
+
+Two-tier auth system. Localhost is always unrestricted (auto-admin). Remote clients need an API key.
+
+| Tier | Who | Access |
+|------|-----|--------|
+| **Public** | Anyone | `GET /health` only |
+| **Localhost** | Local machine | Everything (auto-admin, no key needed) |
+| **Client** | Remote + valid key | State, cameras, code execution, lease, rewind ops, docs, WebSocket, display |
+| **Admin** | Remote + admin key | Everything above + service dashboard, lease queue admin, rewind config |
+
+### Setup
+
+1. Keys are stored in `api_keys.json` (auto-generated with 2 admin + 2 client keys)
+2. Set `ROBOT_API_KEY` env var to an admin key (for SDK subprocess calls):
+   ```bash
+   export ROBOT_API_KEY=sk-admin-<key-from-api_keys.json>
+   ```
+3. Remote clients use `X-API-Key` header or `?api_key=` query param
+4. Dashboard access: `http://<ip>:8080/services/dashboard?api_key=sk-admin-...`
+5. Auth is **disabled** when no keys exist (backward compatible)
+
+### Files
+
+| File | Description |
+|------|-------------|
+| `auth.py` | KeyStore, APIKeyMiddleware, require_admin, check_ws_auth |
+| `api_keys.json` | Generated API keys (2 admin + 2 client) |
+
 ## Robot Control API
 
 ### Code Execution API
@@ -42,8 +71,8 @@ Submit Python code that runs in a subprocess with access to a rich SDK.
 |----------|--------|-------------|
 | `POST /code/execute` | POST | Submit Python code (requires lease) |
 | `POST /code/stop` | POST | Stop running code (requires lease) |
-| `GET /code/status` | GET | Check execution status (no lease) |
-| `GET /code/result` | GET | Get result from last execution (no lease) |
+| `GET /code/status` | GET | Live status with real-time stdout/stderr; supports `?stdout_offset=N&stderr_offset=N` for incremental output (no lease) |
+| `GET /code/result` | GET | Final result after execution completes (no lease) |
 | `GET /code/sdk` | GET | **Auto-generated SDK documentation (JSON)** |
 | `GET /code/sdk/markdown` | GET | SDK documentation as markdown |
 
@@ -105,14 +134,21 @@ resp = requests.post("http://localhost:8080/code/execute",
                      json={"code": code})
 print(resp.json())
 
-# 3. Wait for completion
+# 3. Poll for live output during execution (incremental)
+stdout_offset, stderr_offset = 0, 0
 while True:
-    status = requests.get("http://localhost:8080/code/status").json()
+    status = requests.get("http://localhost:8080/code/status",
+                          params={"stdout_offset": stdout_offset,
+                                  "stderr_offset": stderr_offset}).json()
+    if status["stdout"]:
+        print(f"New output: {status['stdout']}", end="")
+    stdout_offset = status["stdout_offset"]
+    stderr_offset = status["stderr_offset"]
     if not status["is_running"]:
         break
     time.sleep(0.5)
 
-# 4. Get result
+# 4. Get final result
 result = requests.get("http://localhost:8080/code/result").json()["result"]
 print(f"Status: {result['status']}")
 print(f"Output:\n{result['stdout']}")
@@ -131,7 +167,7 @@ See `examples/` for usage examples (`pick_and_place.py`, `simple_move.py`) and `
 3. Unavailable backends are gracefully skipped (warning printed)
 4. On completion/crash, robot holds current position (auto-hold)
 5. `print()` statements captured in `stdout`, errors in `stderr`
-6. **Auto-rewind on lease release:** When the lease is released (or expires), the robot automatically rewinds to its starting position and clears the trajectory. To run multiple code executions without rewinding in between, keep the same lease — only release it when you're done.
+6. **Auto-home on lease release:** When the lease is released (or expires), the robot moves straight to home. Set `"rewind_on_release": true` when acquiring the lease to retrace the trajectory in reverse first (safer when the arm might collide on a straight move). To run multiple code executions without going home in between, keep the same lease — only release it when you're done.
 
 ### Robot SDK (`robot_sdk`)
 
@@ -183,7 +219,7 @@ curl -X POST localhost:8080/code/execute \
 
 | Endpoint | Description |
 |----------|-------------|
-| `POST /lease/acquire` | Acquire or queue for lease (never blocks) `{"holder": "name"}` |
+| `POST /lease/acquire` | Acquire or queue for lease (never blocks) `{"holder": "name", "rewind_on_release": false}` |
 | `GET /lease/queue/{ticket_id}` | Check ticket status and queue position |
 | `DELETE /lease/queue/{ticket_id}` | Cancel ticket (leave queue) |
 | `POST /lease/release` | Release lease `{"lease_id": "..."}` |
@@ -314,7 +350,8 @@ curl -X PUT localhost:8080/rewind/config \
     "ee_pose": ["...16 values: 4x4 column-major"],
     "ee_pose_world": ["...16 values"],
     "ee_wrench": ["fx, fy, fz, tx, ty, tz"],
-    "mode": 0
+    "mode": 0,
+    "robot_mode": 1
   },
   "gripper": {
     "position": 0,

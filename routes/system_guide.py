@@ -27,7 +27,7 @@ def _lease_field_descriptions() -> dict[str, str]:
     return {
         "max_duration_s": "Maximum lease duration before automatic revocation",
         "idle_timeout_s": "Seconds of inactivity before the lease is revoked",
-        "reset_on_release": "Whether the robot auto-rewinds to start when the lease ends",
+        "reset_on_release": "Whether the robot returns to home when the lease ends",
     }
 
 
@@ -120,7 +120,7 @@ def generate_guide() -> dict:
                     "If queued, poll GET /lease/queue/{ticket_id} until status is 'granted'",
                     "Submit code or commands using the lease",
                     "Release with POST /lease/release (or let it expire)",
-                    "Robot automatically rewinds to start position",
+                    "Robot automatically returns to home position",
                     "Next agent in queue gets the lease",
                 ],
                 "endpoints": [
@@ -128,7 +128,11 @@ def generate_guide() -> dict:
                         "method": "POST",
                         "path": "/lease/acquire",
                         "description": "Acquire or queue for control lease (never blocks)",
-                        "body": '{"holder": "my-agent"}',
+                        "body": '{"holder": "my-agent", "rewind_on_release": false}',
+                        "note": "rewind_on_release is optional (default false). "
+                                "When false, the robot moves straight to home on release. "
+                                "Set true to retrace the trajectory in reverse first "
+                                "(safer when the arm might collide on a straight move).",
                     },
                     {
                         "method": "GET",
@@ -168,8 +172,10 @@ def generate_guide() -> dict:
                     "includes your lease_id."
                 ),
                 "auto_rewind_note": (
-                    "When your lease ends, the robot automatically returns to its "
-                    "starting position. You don't need to clean up."
+                    "When your lease ends, the robot moves straight to home. "
+                    "If you set rewind_on_release: true when acquiring, it will "
+                    "retrace its path in reverse before going home — use this when "
+                    "the robot might be in a tight spot where a straight move would collide."
                 ),
             },
             "code_execution": {
@@ -201,7 +207,7 @@ def generate_guide() -> dict:
                     "Code runs synchronously — exceptions stop execution",
                     "Robot holds its current position when code finishes",
                     "print() output is captured in the result",
-                    "Hold the same lease across multiple executions to avoid rewind between them",
+                    "Hold the same lease across multiple executions to avoid going home between them",
                 ],
             },
             "monitoring": {
@@ -386,8 +392,8 @@ def _render_markdown(guide: dict) -> str:
     md += "\n"
 
     md += "### Check Results\n\n"
-    md += f"- `{code['check_status']['method']} {code['check_status']['path']}` — Is code still running?\n"
-    md += f"- `{code['get_result']['method']} {code['get_result']['path']}` — stdout, stderr, exit code\n\n"
+    md += f"- `{code['check_status']['method']} {code['check_status']['path']}` — Live execution status with real-time stdout/stderr. Pass `?stdout_offset=N&stderr_offset=N` (from previous response) to get only new output since last poll.\n"
+    md += f"- `{code['get_result']['method']} {code['get_result']['path']}` — Final result with full stdout, stderr, exit code (after execution completes)\n\n"
 
     # Monitoring section
     if "monitoring" in guide["sections"]:

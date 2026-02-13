@@ -7,7 +7,7 @@ import time
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Header, Request
+from fastapi import APIRouter, HTTPException, Header, Query, Request
 from pydantic import BaseModel, Field
 
 from code_executor import CodeExecutor, CodeValidationResult, ExecutionResult, ExecutionStatus
@@ -41,6 +41,8 @@ class CodeStatusResponse(BaseModel):
     is_running: bool
     stdout: str = ""
     stderr: str = ""
+    stdout_offset: int = 0
+    stderr_offset: int = 0
     duration: float = 0.0
     code: Optional[str] = None
 
@@ -227,10 +229,15 @@ def init_code_routes(lease_manager: LeaseManager):
             )
 
     @router.get("/status", response_model=CodeStatusResponse)
-    async def get_status():
+    async def get_status(
+        stdout_offset: int = Query(0, ge=0, description="Character offset into stdout; only output after this position is returned"),
+        stderr_offset: int = Query(0, ge=0, description="Character offset into stderr; only output after this position is returned"),
+    ):
         """Get current execution status.
 
         Returns execution ID, status, whether code is running, and live output.
+        Pass stdout_offset/stderr_offset from the previous response to receive
+        only new output since the last poll.
         No lease required (read-only).
         """
         executor = get_executor()
@@ -240,12 +247,19 @@ def init_code_routes(lease_manager: LeaseManager):
             stdout, stderr = executor.get_current_output()
             if executor._start_time:
                 duration = time.time() - executor._start_time
+        # Slice to return only new output since the requested offsets
+        full_stdout_len = len(stdout)
+        full_stderr_len = len(stderr)
+        stdout = stdout[stdout_offset:]
+        stderr = stderr[stderr_offset:]
         return CodeStatusResponse(
             execution_id=executor._execution_id,
             status=executor.status,
             is_running=executor.is_running,
             stdout=stdout,
             stderr=stderr,
+            stdout_offset=full_stdout_len,
+            stderr_offset=full_stderr_len,
             duration=duration,
             code=executor.current_code,
         )
