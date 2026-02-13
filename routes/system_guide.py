@@ -228,7 +228,8 @@ def generate_guide() -> dict:
                     {
                         "name": "Terminal output",
                         "description": (
-                            "Poll `GET /code/result` for live stdout/stderr — "
+                            "Poll `GET /code/status` for live stdout/stderr — "
+                            "use `?stdout_offset=N` to get only new output. "
                             "print() statements in your code show up here."
                         ),
                     },
