@@ -94,8 +94,9 @@ REST API for code submission and status.
 - `POST /code/stop` — Stop running code (requires lease)
 - `GET /code/status` — Get live execution status with real-time output (no lease)
   - Query params: `?stdout_offset=N&stderr_offset=N` (optional, for incremental output)
-  - Returns: `{"execution_id": "abc123", "status": "running", "is_running": true, "stdout": "...", "stderr": "...", "stdout_offset": 42, "stderr_offset": 0, "duration": 1.5, "code": "..."}`
+  - Returns: `{"execution_id": "abc123", "status": "running", "is_running": true, "stdout": "...", "stderr": "...", "stdout_offset": 42, "stderr_offset": 0, "duration": 1.5, "code": "...", "error": "", "stop_reason": ""}`
   - Pass offsets from previous response to get only new output since last poll
+  - When execution ends, includes `error` (human-readable message) and `stop_reason` (e.g. `idle_timeout`, `max_duration`, `manual`)
 - `GET /code/result` — Get last result (no lease)
   - Returns: `{"result": {"status": "completed", "stdout": "...", "stderr": "...", ...}}`
 

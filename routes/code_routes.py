@@ -45,6 +45,8 @@ class CodeStatusResponse(BaseModel):
     stderr_offset: int = 0
     duration: float = 0.0
     code: Optional[str] = None
+    error: str = ""
+    stop_reason: str = ""
 
 
 class CodeResultResponse(BaseModel):
@@ -243,10 +245,20 @@ def init_code_routes(lease_manager: LeaseManager):
         executor = get_executor()
         stdout, stderr = "", ""
         duration = 0.0
+        error, stop_reason = "", ""
         if executor.is_running:
             stdout, stderr = executor.get_current_output()
             if executor._start_time:
                 duration = time.time() - executor._start_time
+        else:
+            # Pull final output and stop info from last result
+            last = executor.get_last_result()
+            if last:
+                stdout = last.stdout
+                stderr = last.stderr
+                duration = last.duration
+                error = last.error
+                stop_reason = last.stop_reason
         # Slice to return only new output since the requested offsets
         full_stdout_len = len(stdout)
         full_stderr_len = len(stderr)
@@ -262,6 +274,8 @@ def init_code_routes(lease_manager: LeaseManager):
             stderr_offset=full_stderr_len,
             duration=duration,
             code=executor.current_code,
+            error=error,
+            stop_reason=stop_reason,
         )
 
     @router.get("/result", response_model=CodeResultResponse)

@@ -71,7 +71,7 @@ Submit Python code that runs in a subprocess with access to a rich SDK.
 |----------|--------|-------------|
 | `POST /code/execute` | POST | Submit Python code (requires lease) |
 | `POST /code/stop` | POST | Stop running code (requires lease) |
-| `GET /code/status` | GET | Live status with real-time stdout/stderr; supports `?stdout_offset=N&stderr_offset=N` for incremental output (no lease) |
+| `GET /code/status` | GET | Live status with real-time stdout/stderr, incremental output via `?stdout_offset=N&stderr_offset=N`, and `error`/`stop_reason` when execution ends (no lease) |
 | `GET /code/result` | GET | Final result after execution completes (no lease) |
 | `GET /code/sdk` | GET | **Auto-generated SDK documentation (JSON)** |
 | `GET /code/sdk/markdown` | GET | SDK documentation as markdown |
