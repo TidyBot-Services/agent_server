@@ -362,6 +362,9 @@ def _render_markdown(guide: dict) -> str:
         md += f"| `{ep['method']}` | `{ep['path']}` | {ep['description']} |\n"
     md += "\n"
 
+    md += "When a lease is granted (via `/lease/acquire` or `/lease/queue/{ticket_id}`), "
+    md += "the response includes `max_duration_s` and `idle_timeout_s` so you know your time limits.\n\n"
+
     # Code execution section
     code = guide["sections"]["code_execution"]
     md += f"## {code['title']}\n\n"

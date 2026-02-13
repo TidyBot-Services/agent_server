@@ -21,6 +21,7 @@ class Lease:
     holder: str  # client identifier
     granted_at: float
     last_cmd_at: float
+    rewind_on_release: bool = False  # if True, rewind trajectory before going home
 
 
 @dataclass
@@ -31,6 +32,7 @@ class QueueTicket:
     status: str = "waiting"          # "waiting" | "granted" | "expired" | "cancelled"
     lease_id: str | None = None      # set when auto-granted
     granted_at: float | None = None  # when status changed to "granted"
+    rewind_on_release: bool = False  # forwarded to Lease when granted
 
 
 class LeaseManager:
@@ -53,15 +55,20 @@ class LeaseManager:
         # Reset-on-release state
         self._resetting: bool = False
         self._reset_task: asyncio.Task | None = None
-        self._on_lease_end_async: Callable[[], Awaitable[None]] | None = None
+        self._on_lease_end_async: Callable[[bool], Awaitable[None]] | None = None
         self._on_lease_start: Callable[[], None] | None = None
 
     @property
     def current_lease(self) -> Lease | None:
         return self._current
 
-    def set_on_lease_end(self, callback: Callable[[], Awaitable[None]]) -> None:
-        """Set async callback invoked when a lease ends (rewind + clear)."""
+    def set_on_lease_end(self, callback: Callable[[bool], Awaitable[None]]) -> None:
+        """Set async callback invoked when a lease ends.
+
+        Args:
+            callback: Called with ``rewind`` bool — True to rewind trajectory
+                before going home, False to go home directly.
+        """
         self._on_lease_end_async = callback
 
     def set_on_lease_start(self, callback: Callable[[str], None]) -> None:
@@ -97,17 +104,19 @@ class LeaseManager:
                 ticket.status = "cancelled"
             self._queue.clear()
 
-    async def acquire(self, holder: str) -> dict:
+    async def acquire(self, holder: str, rewind_on_release: bool = False) -> dict:
         async with self._lock:
             # Lease free → grant immediately
             if self._current is None and not self._resetting and not self._paused:
-                return self._grant(holder)
+                return self._grant(holder, rewind_on_release=rewind_on_release)
             # Already holder?
             if self._current and self._current.holder == holder:
                 return {
                     "status": "already_held",
                     "lease_id": self._current.lease_id,
                     "remaining_s": self._remaining(),
+                    "max_duration_s": self._cfg.max_duration_s,
+                    "idle_timeout_s": self._cfg.idle_timeout_s,
                 }
             # Same holder already waiting → return existing ticket (idempotent)
             for i, ticket in enumerate(self._queue):
@@ -123,6 +132,7 @@ class LeaseManager:
                 ticket_id=str(uuid.uuid4()),
                 holder=holder,
                 created_at=time.time(),
+                rewind_on_release=rewind_on_release,
             )
             self._queue.append(ticket)
             self._tickets[ticket.ticket_id] = ticket
@@ -146,6 +156,8 @@ class LeaseManager:
                 "status": "granted",
                 "lease_id": ticket.lease_id,
                 "holder": ticket.holder,
+                "max_duration_s": self._cfg.max_duration_s,
+                "idle_timeout_s": self._cfg.idle_timeout_s,
             }
         if ticket.status == "waiting":
             # Find position in queue
@@ -184,12 +196,12 @@ class LeaseManager:
     async def release(self, lease_id: str) -> dict:
         async with self._lock:
             if self._current and self._current.lease_id == lease_id:
-                holder = self._current.holder
+                rewind = self._current.rewind_on_release
                 self._current = None
                 if self._cfg.reset_on_release and self._on_lease_end_async:
                     self._resetting = True
                     self._reset_task = asyncio.create_task(
-                        self._do_reset_and_grant(reason="released")
+                        self._do_reset_and_grant(reason="released", rewind=rewind)
                     )
                     return {"status": "released", "resetting": True}
                 else:
@@ -285,13 +297,14 @@ class LeaseManager:
 
     # -- internals -----------------------------------------------------------
 
-    def _grant(self, holder: str) -> dict:
+    def _grant(self, holder: str, rewind_on_release: bool = False) -> dict:
         now = time.time()
         lease = Lease(
             lease_id=str(uuid.uuid4()),
             holder=holder,
             granted_at=now,
             last_cmd_at=now,
+            rewind_on_release=rewind_on_release,
         )
         self._current = lease
         if self._on_lease_start:
@@ -302,6 +315,7 @@ class LeaseManager:
             "type": "lease_granted",
             "lease_id": lease.lease_id,
             "max_duration_s": self._cfg.max_duration_s,
+            "idle_timeout_s": self._cfg.idle_timeout_s,
         }
 
     def _remaining(self) -> float:
@@ -316,7 +330,7 @@ class LeaseManager:
         while self._queue:
             ticket = self._queue.popleft()
             if ticket.status == "waiting":
-                result = self._grant(ticket.holder)
+                result = self._grant(ticket.holder, rewind_on_release=ticket.rewind_on_release)
                 ticket.status = "granted"
                 ticket.lease_id = result["lease_id"]
                 ticket.granted_at = time.time()
@@ -326,20 +340,21 @@ class LeaseManager:
     def _revoke(self, reason: str) -> None:
         if not self._current:
             return
+        rewind = self._current.rewind_on_release
         logger.info("Lease revoked from %s: %s", self._current.holder, reason)
         self._current = None
         if self._cfg.reset_on_release and self._on_lease_end_async:
             self._resetting = True
             self._reset_task = asyncio.create_task(
-                self._do_reset_and_grant(reason=reason)
+                self._do_reset_and_grant(reason=reason, rewind=rewind)
             )
         else:
             self._try_grant_next()
 
-    async def _do_reset_and_grant(self, reason: str = "released") -> None:
-        """Rewind to home, clear trajectory, then grant next queued client."""
+    async def _do_reset_and_grant(self, reason: str = "released", rewind: bool = False) -> None:
+        """Reset robot to home, optionally rewinding trajectory first."""
         try:
-            logger.info("Lease ended — resetting robot to home (reason: %s)", reason)
+            logger.info("Lease ended — resetting robot to home (reason: %s, rewind: %s)", reason, rewind)
 
             # Stop any running code execution
             try:
@@ -351,8 +366,8 @@ class LeaseManager:
             except Exception as e:
                 logger.warning("Failed to stop code executor: %s", e)
 
-            # Perform rewind + clear
-            await self._on_lease_end_async()
+            # Perform reset (rewind + go home, or just go home)
+            await self._on_lease_end_async(rewind)
 
             logger.info("Reset to home complete")
         except asyncio.CancelledError:
