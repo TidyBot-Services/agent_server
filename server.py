@@ -20,10 +20,12 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 
+from auth import APIKeyMiddleware, KeyStore
 from backends.base import BaseBackend
 from backends.cameras import CameraBackend
 from backends.franka import FrankaBackend
 from backends.gripper import GripperBackend
+from backends.mocap import MocapBackend
 from config import LeaseConfig, ServerConfig, ServiceManagerConfig, default_services
 from lease import LeaseManager
 from display_state import DisplayBroadcaster
@@ -45,6 +47,12 @@ logger = setup_logging("agent_server")
 def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> FastAPI:
     app = FastAPI(title="TidyBot Hardware Server")
 
+    # -- API key auth --------------------------------------------------------
+    keys_path = os.path.join(_SERVER_DIR, "api_keys.json")
+    key_store = KeyStore(keys_path)
+    app.add_middleware(APIKeyMiddleware, key_store=key_store)
+    app.state.key_store = key_store
+
     # Initialize app state for background tasks
     app.state.background_tasks = set()
 
@@ -59,9 +67,10 @@ def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> F
     franka_backend = FrankaBackend(cfg.franka, dry_run=cfg.dry_run)
     gripper_backend = GripperBackend(cfg.gripper, dry_run=cfg.dry_run)
     camera_backend = CameraBackend(cfg.cameras, dry_run=cfg.dry_run)
+    mocap_backend = MocapBackend(cfg.mocap, dry_run=cfg.dry_run)
 
     # -- core services -------------------------------------------------------
-    state_agg = StateAggregator(cfg, base_backend, franka_backend, gripper_backend, camera_backend)
+    state_agg = StateAggregator(cfg, base_backend, franka_backend, gripper_backend, camera_backend, mocap=mocap_backend)
     safety = SafetyEnvelope(cfg.safety)
     display = DisplayBroadcaster()
 
@@ -110,14 +119,18 @@ def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> F
         last_moved_at_fn=state_agg.last_moved_at,
     )
 
-    # Wire lease-end callback: rewind to home + clear trajectory
+    # Wire lease-end callback: go home (optionally rewind first) + clear trajectory
     if cfg.lease.reset_on_release:
-        async def _on_lease_end():
-            result = await rewind_orchestrator.reset_to_home()
-            if result.success or result.steps_rewound == 0:
-                system_logger.clear()
+        async def _on_lease_end(rewind: bool):
+            if rewind:
+                result = await rewind_orchestrator.reset_to_home()
+                if result.success or result.steps_rewound == 0:
+                    system_logger.clear()
+                else:
+                    logger.error("Lease-end reset failed: %s", result.error)
             else:
-                logger.error("Lease-end reset failed: %s", result.error)
+                await rewind_orchestrator.go_home()
+                system_logger.clear()
 
         lease_mgr.set_on_lease_end(_on_lease_end)
 
@@ -138,15 +151,15 @@ def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> F
     from routes.yolo_routes import router as yolo_router
     from routes.display_routes import create_router as display_router
 
-    app.include_router(state_router(state_agg, camera_backend, lease_mgr, base_backend, franka_backend, gripper_backend, system_logger))
+    app.include_router(state_router(state_agg, camera_backend, lease_mgr, base_backend, franka_backend, gripper_backend, mocap_backend, system_logger))
     app.include_router(lease_router(lease_mgr))
     app.include_router(rewind_router(rewind_orchestrator, lease_mgr, system_logger, safety_monitor, arm_monitor))
-    app.include_router(ws_router(state_agg, cfg, camera_backend))
-    app.include_router(init_code_routes(lease_mgr))
+    app.include_router(ws_router(state_agg, cfg, camera_backend, key_store=key_store))
+    app.include_router(init_code_routes(lease_mgr, camera_backend))
     app.include_router(sdk_docs_router)
     app.include_router(system_guide_router)
     app.include_router(yolo_router)
-    app.include_router(display_router(display))
+    app.include_router(display_router(display, key_store=key_store))
 
     # Service manager routes (includes dashboard)
     if cfg.dashboard:
@@ -184,6 +197,11 @@ def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> F
             await camera_backend.start()
         except Exception as e:
             logger.error("Failed to start camera backend: %s", e)
+
+        try:
+            await mocap_backend.connect()
+        except Exception as e:
+            logger.error("Failed to connect to mocap backend: %s", e)
 
         await state_agg.start()
         await lease_mgr.start()
@@ -230,6 +248,10 @@ def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> F
         app.state.background_tasks.add(task)
         task.add_done_callback(app.state.background_tasks.discard)
 
+        if key_store.enabled:
+            logger.info("API key auth ENABLED (%d keys loaded)", len(key_store._keys))
+        else:
+            logger.info("API key auth DISABLED (no keys configured)")
         logger.info("Hardware server ready on %s:%d", cfg.host, cfg.port)
 
     @app.on_event("shutdown")
@@ -258,6 +280,7 @@ def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> F
 
         await lease_mgr.stop()
         await state_agg.stop()
+        await mocap_backend.disconnect()
         await camera_backend.stop()
         await gripper_backend.disconnect()
         await franka_backend.disconnect()

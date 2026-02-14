@@ -76,10 +76,17 @@ def default_services() -> dict[str, ServiceDefinition]:
         ),
         "camera_server": ServiceDefinition(
             name="Camera Server",
-            cmd="python3 -m camera_server.server",
+            cmd="python3 -m camera_server.server --config cameras.yaml",
             cwd=os.path.join(_PROJECT_ROOT, "camera_server"),
             shell_prefix=_venv_activate,
             kill_patterns=["camera_server.server"],
+        ),
+        "mocap_server": ServiceDefinition(
+            name="Mocap Server",
+            cmd="python3 -m mocap_server.server",
+            cwd=os.path.join(_PROJECT_ROOT, "mocap_server"),
+            shell_prefix=_venv_activate,
+            kill_patterns=["mocap_server"],
         ),
     }
 
@@ -157,6 +164,12 @@ class GripperBackendConfig:
     host: str = "localhost"
     cmd_port: int = 5570
     state_port: int = 5571
+
+
+@dataclass
+class MocapBackendConfig:
+    host: str = "localhost"
+    pub_port: int = 5590
 
 
 @dataclass
@@ -277,6 +290,7 @@ class ServerConfig:
     franka: FrankaBackendConfig = field(default_factory=FrankaBackendConfig)
     gripper: GripperBackendConfig = field(default_factory=GripperBackendConfig)
     cameras: CameraConfig = field(default_factory=CameraConfig)
+    mocap: MocapBackendConfig = field(default_factory=MocapBackendConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     lease: LeaseConfig = field(default_factory=LeaseConfig)
     service_manager: ServiceManagerConfig = field(default_factory=ServiceManagerConfig)

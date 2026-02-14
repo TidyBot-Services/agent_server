@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
+
+from auth import require_admin
 
 router = APIRouter(prefix="/rewind", tags=["rewind"])
 
@@ -117,7 +119,8 @@ def create_router(rewind_orchestrator, lease_mgr, system_logger, safety_monitor=
         info["last_safe_waypoint_idx"] = rewind_orchestrator.find_last_safe_waypoint()
         return info
 
-    @router.post("/trajectory/clear", include_in_schema=False)
+    @router.post("/trajectory/clear", include_in_schema=False,
+                 dependencies=[Depends(require_admin)])
     async def clear_trajectory():
         """Clear all recorded trajectory waypoints."""
         system_logger.clear()
@@ -235,7 +238,8 @@ def create_router(rewind_orchestrator, lease_mgr, system_logger, safety_monitor=
             "chunk_duration": cfg.chunk_duration,
         }
 
-    @router.put("/config", include_in_schema=False)
+    @router.put("/config", include_in_schema=False,
+                dependencies=[Depends(require_admin)])
     async def update_config(req: RewindConfigUpdate):
         """Update rewind config.
 
@@ -297,7 +301,8 @@ def create_router(rewind_orchestrator, lease_mgr, system_logger, safety_monitor=
             result["arm_monitor"] = arm_monitor.get_status()
         return result
 
-    @router.put("/monitor/config", include_in_schema=False)
+    @router.put("/monitor/config", include_in_schema=False,
+                dependencies=[Depends(require_admin)])
     async def update_monitor_config(req: MonitorConfigUpdate):
         """Update monitor config (dashboard compatibility)."""
         cfg = rewind_orchestrator.config
@@ -317,13 +322,15 @@ def create_router(rewind_orchestrator, lease_mgr, system_logger, safety_monitor=
             cfg.collision_grace_period = req.collision_grace_period
         return await get_monitor_status()
 
-    @router.post("/monitor/enable", include_in_schema=False)
+    @router.post("/monitor/enable", include_in_schema=False,
+                 dependencies=[Depends(require_admin)])
     async def enable_auto_rewind():
         """Enable auto-rewind."""
         rewind_orchestrator.config.auto_rewind_enabled = True
         return {"auto_rewind_enabled": True}
 
-    @router.post("/monitor/disable", include_in_schema=False)
+    @router.post("/monitor/disable", include_in_schema=False,
+                 dependencies=[Depends(require_admin)])
     async def disable_auto_rewind():
         """Disable auto-rewind."""
         rewind_orchestrator.config.auto_rewind_enabled = False

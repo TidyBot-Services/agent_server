@@ -11,6 +11,8 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from auth import KeyStore, check_ws_auth
+
 try:
     import cv2
     CV2_AVAILABLE = True
@@ -31,17 +33,30 @@ class CameraSubscription:
         self.devices: list[str] = []  # Empty = all devices
 
 
-def create_router(state_agg, config, camera_backend=None):
+def create_router(state_agg, config, camera_backend=None, key_store: KeyStore | None = None):
     """Create WebSocket router.
 
     Args:
         state_agg: StateAggregator instance
         config: ServerConfig
         camera_backend: Optional CameraBackend for /ws/cameras
+        key_store: Optional KeyStore for WebSocket auth
     """
+
+    async def _ws_auth(ws: WebSocket) -> bool:
+        """Check auth and close with 4001 if unauthorized. Returns True if ok."""
+        if key_store is None:
+            return True
+        ok, _name, _role = check_ws_auth(ws, key_store)
+        if not ok:
+            await ws.close(code=4001, reason="Unauthorized")
+            return False
+        return True
 
     @router.websocket("/ws/state")
     async def ws_state(ws: WebSocket):
+        if not await _ws_auth(ws):
+            return
         await ws.accept()
         interval = 1.0 / config.observer_state_hz
         try:
@@ -56,16 +71,18 @@ def create_router(state_agg, config, camera_backend=None):
     @router.websocket("/ws/cameras")
     async def ws_cameras(ws: WebSocket):
         """WebSocket endpoint for camera streaming.
-        
+
         Clients can send JSON messages to configure streaming:
         - {"action": "subscribe", "streams": ["color"], "fps": 15, "quality": 80}
         - {"action": "unsubscribe"}
         - {"action": "get_state"}
-        
+
         Server sends:
         - Binary frames: [4-byte header len][JSON header][JPEG data]
         - JSON state messages
         """
+        if not await _ws_auth(ws):
+            return
         await ws.accept()
         
         if camera_backend is None or not camera_backend.is_connected:

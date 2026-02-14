@@ -135,22 +135,9 @@ class GripperAPI:
         Raises:
             GripperError: If grasp command fails
         """
-        success = self._backend.grasp(speed=speed, force=force)
-        if not success:
-            raise GripperError("Failed to send grasp command")
-
-        # Wait for motion to complete
-        timeout = timeout or self._timeout
-        start_time = time.time()
-
-        while time.time() - start_time < timeout:
-            state = self._backend.get_state()
-            if not state.get("is_moving", False):
-                # Return whether object was detected
-                return state.get("object_detected", False)
-            time.sleep(0.1)
-
-        raise GripperError("Timeout waiting for gripper to grasp")
+        # backend.grasp() blocks until closure completes and returns
+        # whether an object was detected between the fingers.
+        return self._backend.grasp(speed=speed, force=force)
 
     def move(
         self,

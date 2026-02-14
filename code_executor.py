@@ -78,6 +78,7 @@ class ExecutionResult:
     stop_reason: str = ""
     started_at: float = 0.0
     code: str = ""
+    api_key_name: str = ""
 
 
 @dataclass
@@ -403,6 +404,7 @@ class CodeExecutor:
         server_url: str = "http://localhost:8080",
         holder: str = "",
         client_host: str = "",
+        api_key_name: str = "",
     ) -> ExecutionResult:
         """Execute code in subprocess.
 
@@ -429,6 +431,7 @@ class CodeExecutor:
         self._server_url = server_url
         self._holder = holder
         self._client_host = client_host
+        self._api_key_name = api_key_name
         self._current_code = code
 
         # Save code to logs/code_executions/ directory
@@ -545,6 +548,7 @@ class CodeExecutor:
             else:
                 result.holder = self._holder
                 result.client_host = self._client_host
+                result.api_key_name = self._api_key_name
                 self._last_result = result
             self._history.append(result)
             if len(self._history) > 10:
@@ -618,6 +622,7 @@ class CodeExecutor:
             stop_reason=reason,
             started_at=self._start_time or 0.0,
             code=self._current_code or "",
+            api_key_name=self._api_key_name,
         )
 
         self._process = None
@@ -856,5 +861,10 @@ asyncio.run(cleanup())
             env["ROBOT_LEASE_ID"] = self._lease_id
         if hasattr(self, "_server_url") and self._server_url:
             env["ROBOT_SERVER_URL"] = self._server_url
+
+        # Forward ROBOT_API_KEY so SDK calls from subprocess include auth
+        api_key = os.environ.get("ROBOT_API_KEY")
+        if api_key:
+            env["ROBOT_API_KEY"] = api_key
 
         return env

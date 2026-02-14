@@ -23,6 +23,7 @@ class FrankaBackend:
         # Staleness tracking — detect when franka_server stops publishing
         self._last_state_q: list | None = None  # last observed q values
         self._last_state_change_time: float = 0.0  # wall-clock time q last changed
+        self._last_error: str = ""  # Last error from franka_server (survives staleness)
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -77,7 +78,8 @@ class FrankaBackend:
         """Return arm state as a plain dict.
 
         Returns empty dict if the ZMQ subscriber has stopped receiving
-        updates (franka_server likely crashed).
+        updates (franka_server likely crashed). The ``last_error`` key
+        is preserved across staleness so callers can see *why* it died.
         """
         if self._dry_run:
             return {
@@ -86,12 +88,19 @@ class FrankaBackend:
                 "ee_pose": [0.0] * 16,
                 "ee_wrench": [0.0] * 6,
                 "control_mode": 0,
+                "robot_mode": 0,
+                "last_error": "",
             }
         if self._client is None:
             return {}
         state = self._client.latest_state
         if state is None:
             return {}
+
+        # Capture last_error from the state message (survives staleness)
+        error = getattr(state, 'last_error', "") or ""
+        if error:
+            self._last_error = error
 
         q = list(state.q)
         now = time.time()
@@ -107,7 +116,10 @@ class FrankaBackend:
                 self._last_state_count = current_count
                 self._last_state_change_time = now
             elif now - self._last_state_change_time > self.STATE_STALE_TIMEOUT:
-                # No new ZMQ messages for STATE_STALE_TIMEOUT seconds
+                # No new ZMQ messages for STATE_STALE_TIMEOUT seconds.
+                # Return minimal dict with last_error so callers know why.
+                if self._last_error:
+                    return {"last_error": self._last_error}
                 return {}
 
         return {
@@ -116,9 +128,11 @@ class FrankaBackend:
             "ee_pose": list(state.O_T_EE),
             "ee_wrench": list(state.O_F_ext_hat_K),
             "control_mode": int(state.control_mode),
+            "robot_mode": int(getattr(state, 'robot_mode', 0)),
             "auto_hold_active": bool(getattr(state, 'auto_hold_active', False)),
             "q_target": list(getattr(state, 'q_target', [0.0] * 7)),
             "pose_target": list(getattr(state, 'pose_target', [0.0] * 16)),
+            "last_error": error,
         }
 
     # -- arm commands --------------------------------------------------------

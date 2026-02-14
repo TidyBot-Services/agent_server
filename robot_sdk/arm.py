@@ -45,6 +45,23 @@ class ArmAPI:
     MODE_CARTESIAN_VELOCITY = 5
     MODE_CARTESIAN_IMPEDANCE = 7
 
+    # Robot mode constants (franka::RobotMode)
+    ROBOT_MODE_IDLE = 1
+    ROBOT_MODE_MOVE = 2
+    ROBOT_MODE_REFLEX = 4
+    ROBOT_MODE_USER_STOPPED = 5
+    ROBOT_MODE_ERROR_RECOVERY = 6
+
+    _ROBOT_MODE_NAMES = {
+        0: "Other",
+        1: "Idle",
+        2: "Move",
+        3: "Guiding",
+        4: "Reflex",
+        5: "UserStopped",
+        6: "AutomaticErrorRecovery",
+    }
+
     def __init__(
         self,
         backend: FrankaBackend,
@@ -72,6 +89,36 @@ class ArmAPI:
         else:
             return 1 - pow(-2 * t + 2, 3) / 2
 
+    def _get_state_checked(self) -> dict:
+        """Get arm state, raising ArmError if disconnected or in error mode.
+
+        Returns:
+            State dict with keys: q, dq, ee_pose, ee_wrench, control_mode, robot_mode
+
+        Raises:
+            ArmError: If arm server is disconnected or robot is in error state
+        """
+        state = self._backend.get_state()
+        if not state:
+            raise ArmError("Arm server disconnected (no state received)")
+
+        last_error = state.get("last_error", "")
+
+        # Stale state with only last_error means server crashed
+        if "q" not in state:
+            detail = f": {last_error}" if last_error else ""
+            raise ArmError(f"Arm server crashed{detail}")
+
+        robot_mode = state.get("robot_mode", 0)
+        if robot_mode == self.ROBOT_MODE_REFLEX:
+            detail = f": {last_error}" if last_error else ""
+            raise ArmError(
+                f"Robot entered Reflex mode (safety stop triggered){detail}"
+            )
+        if robot_mode == self.ROBOT_MODE_USER_STOPPED:
+            raise ArmError("Robot is in UserStopped mode (user stop button pressed)")
+        return state
+
     def _setup_joint_mode(self) -> list:
         """Read state and set up joint position mode, keeping commands flowing.
 
@@ -81,16 +128,19 @@ class ArmAPI:
 
         Returns:
             Current joint positions [7].
+
+        Raises:
+            ArmError: If arm server is disconnected or robot is in error state.
         """
         # Read state with keepalives between reads
-        state = self._backend.get_state()
-        current_q = state.get("q", [0.0] * 7)
+        state = self._get_state_checked()
+        current_q = state["q"]
 
         for _ in range(2):
             self._backend.send_joint_position(list(current_q), blocking=False)
             time.sleep(0.02)
-            state = self._backend.get_state()
-            current_q = state.get("q", [0.0] * 7)
+            state = self._get_state_checked()
+            current_q = state["q"]
 
         # Set mode (sends keepalive to bridge the gap)
         self._backend.set_control_mode(self.MODE_JOINT_POSITION)
@@ -112,16 +162,19 @@ class ArmAPI:
 
         Returns:
             Tuple of (current_pose [16], state dict).
+
+        Raises:
+            ArmError: If arm server is disconnected or robot is in error state.
         """
         # Read state with keepalives between reads
-        state = self._backend.get_state()
+        state = self._get_state_checked()
         current_pose = state.get("ee_pose")
 
         for _ in range(2):
             if current_pose:
                 self._backend.send_cartesian_pose(list(current_pose), blocking=False)
             time.sleep(0.02)
-            state = self._backend.get_state()
+            state = self._get_state_checked()
             current_pose = state.get("ee_pose")
 
         if not current_pose:
@@ -211,10 +264,10 @@ class ArmAPI:
                 if settle_deadline is None:
                     settle_deadline = time.time() + self._settle_timeout
 
-                # Verify we've reached target
-                state = self._backend.get_state()
-                current_q = state.get("q", [0.0] * 7)
-                dq = state.get("dq", [0.0] * 7)
+                # Verify we've reached target (also checks for errors)
+                state = self._get_state_checked()
+                current_q = state["q"]
+                dq = state["dq"]
 
                 errors = [abs(current_q[i] - q[i]) for i in range(7)]
                 max_error = max(errors)
@@ -229,7 +282,7 @@ class ArmAPI:
 
             time.sleep(command_interval)
 
-        raise ArmError(f"Timeout waiting for arm to reach target position")
+        raise ArmError("Timeout waiting for arm to reach target position")
 
     def move_to_pose(
         self,
@@ -321,9 +374,9 @@ class ArmAPI:
                 if settle_deadline is None:
                     settle_deadline = time.time() + self._settle_timeout
 
-                state = self._backend.get_state()
+                state = self._get_state_checked()
                 ee = state.get("ee_pose", current_pose)
-                dq = state.get("dq", [0.0] * 7)
+                dq = state["dq"]
 
                 pos_error = (
                     (ee[12] - target_x)**2 +
@@ -451,9 +504,9 @@ class ArmAPI:
                 if settle_deadline is None:
                     settle_deadline = time.time() + self._settle_timeout
 
-                state = self._backend.get_state()
+                state = self._get_state_checked()
                 ee = state.get("ee_pose", current_pose)
-                dq = state.get("dq", [0.0] * 7)
+                dq = state["dq"]
 
                 pos_error = (
                     (ee[12] - target_x)**2 +
@@ -549,9 +602,12 @@ class ArmAPI:
         """Get current arm state.
 
         Returns:
-            Dictionary with keys: q, dq, ee_pose, ee_wrench, control_mode
+            Dictionary with keys: q, dq, ee_pose, ee_wrench, control_mode, robot_mode
+
+        Raises:
+            ArmError: If arm server is disconnected or robot is in error state.
         """
-        return self._backend.get_state()
+        return self._get_state_checked()
 
     def stop(self) -> None:
         """Emergency stop the arm.

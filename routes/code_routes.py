@@ -10,8 +10,12 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Header, Query, Request
 from pydantic import BaseModel, Field
 
+from fastapi.responses import JSONResponse, Response
+
+from backends.cameras import CameraBackend
 from code_executor import CodeExecutor, CodeValidationResult, ExecutionResult, ExecutionStatus
 from config import TIMING
+from execution_recorder import ExecutionRecorder
 from lease import LeaseManager
 
 logger = logging.getLogger(__name__)
@@ -74,8 +78,9 @@ class CodeValidateResponse(BaseModel):
     message: str = ""
 
 
-# Module-level code executor instance (shared across routes)
+# Module-level singletons (shared across routes)
 _executor: Optional[CodeExecutor] = None
+_recorder: Optional[ExecutionRecorder] = None
 
 
 def get_executor() -> CodeExecutor:
@@ -86,7 +91,15 @@ def get_executor() -> CodeExecutor:
     return _executor
 
 
-def init_code_routes(lease_manager: LeaseManager):
+def get_recorder() -> ExecutionRecorder:
+    """Get or create execution recorder instance."""
+    global _recorder
+    if _recorder is None:
+        _recorder = ExecutionRecorder()
+    return _recorder
+
+
+def init_code_routes(lease_manager: LeaseManager, camera_backend: CameraBackend):
     """Initialize code routes with dependencies."""
 
     @router.post("/execute", response_model=CodeExecuteResponse)
@@ -135,17 +148,21 @@ def init_code_routes(lease_manager: LeaseManager):
         # Use timeout from request or central default
         timeout = body.timeout if body.timeout is not None else TIMING.code_execution_timeout_s
 
-        # Get holder name from lease and client IP
+        # Get holder name from lease, client IP, and API key name
         lease_info = lease_manager.current_lease
         holder = lease_info.holder if lease_info else ""
         client_host = request.client.host if request.client else ""
+        api_key_name = getattr(request.state, "auth_user", "")
 
         logger.info(f"Executing code (ID: {execution_id}) for lease {x_lease_id} holder={holder} from={client_host}")
 
         # Execute code in background task (non-blocking)
         import asyncio
 
+        recorder = get_recorder()
+
         async def run_code():
+            recorder.start(execution_id, camera_backend)
             try:
                 result = await executor.execute(
                     code=body.code,
@@ -154,10 +171,14 @@ def init_code_routes(lease_manager: LeaseManager):
                     lease_id=x_lease_id,  # Pass lease for rewind API
                     holder=holder,
                     client_host=client_host,
+                    api_key_name=api_key_name,
                 )
                 logger.info(f"Code execution {execution_id} finished: {result.status}")
             except Exception as e:
                 logger.error(f"Code execution {execution_id} failed: {e}", exc_info=True)
+            finally:
+                recorder.stop()
+                recorder.cleanup_old_recordings()
 
         # Start execution as background task
         task = asyncio.create_task(run_code())
@@ -310,5 +331,54 @@ def init_code_routes(lease_manager: LeaseManager):
         executor = get_executor()
         history = executor.get_history(count)
         return {"history": history}
+
+    @router.get("/recordings/{execution_id}")
+    async def get_recording(execution_id: str):
+        """Get recording metadata for an execution.
+
+        Returns frame list, timestamps, camera info.
+        No lease required (read-only).
+        """
+        recorder = get_recorder()
+        metadata = recorder.get_recording(execution_id)
+        if metadata is None:
+            return JSONResponse(
+                {"error": f"No recording found for execution {execution_id}"},
+                status_code=404,
+            )
+        return metadata
+
+    @router.get("/recordings/{execution_id}/frames/{filename}")
+    async def get_recording_frame(execution_id: str, filename: str):
+        """Serve a recorded JPEG frame.
+
+        No lease required (read-only).
+        """
+        from pathlib import Path
+
+        # Sanitize filename to prevent path traversal
+        safe_name = Path(filename).name
+        if safe_name != filename or ".." in filename:
+            raise HTTPException(status_code=400, detail="Invalid filename")
+
+        from execution_recorder import _CODE_DIR
+        filepath = _CODE_DIR / execution_id / safe_name
+        if not filepath.exists() or not filepath.suffix == ".jpg":
+            raise HTTPException(status_code=404, detail="Frame not found")
+
+        return Response(
+            content=filepath.read_bytes(),
+            media_type="image/jpeg",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
+    @router.get("/recordings")
+    async def list_recordings():
+        """List all execution IDs that have recordings (newest first).
+
+        No lease required (read-only).
+        """
+        recorder = get_recorder()
+        return {"recordings": recorder.list_recordings()}
 
     return router

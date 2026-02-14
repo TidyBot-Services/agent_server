@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
+
+from auth import require_admin
 
 router = APIRouter(prefix="/lease")
 
 
 class AcquireRequest(BaseModel):
     holder: str
+    rewind_on_release: bool = False  # if True, rewind trajectory before going home on release
 
 
 class LeaseIdRequest(BaseModel):
@@ -19,7 +22,7 @@ class LeaseIdRequest(BaseModel):
 def create_router(lease_mgr):
     @router.post("/acquire")
     async def acquire(req: AcquireRequest):
-        return await lease_mgr.acquire(req.holder)
+        return await lease_mgr.acquire(req.holder, rewind_on_release=req.rewind_on_release)
 
     @router.post("/release")
     async def release(req: LeaseIdRequest):
@@ -43,15 +46,18 @@ def create_router(lease_mgr):
         """Cancel a queue ticket (leave the queue)."""
         return lease_mgr.cancel_ticket(ticket_id)
 
-    @router.post("/clear-queue", include_in_schema=False)
+    @router.post("/clear-queue", include_in_schema=False,
+                 dependencies=[Depends(require_admin)])
     async def clear_queue():
         return await lease_mgr.clear_queue()
 
-    @router.post("/pause-queue", include_in_schema=False)
+    @router.post("/pause-queue", include_in_schema=False,
+                 dependencies=[Depends(require_admin)])
     async def pause_queue():
         return await lease_mgr.pause_queue()
 
-    @router.post("/resume-queue", include_in_schema=False)
+    @router.post("/resume-queue", include_in_schema=False,
+                 dependencies=[Depends(require_admin)])
     async def resume_queue():
         return await lease_mgr.resume_queue()
 

@@ -14,6 +14,7 @@ from backends.base import BaseBackend
 from backends.franka import FrankaBackend
 from backends.gripper import GripperBackend
 from backends.cameras import CameraBackend
+from backends.mocap import MocapBackend
 from config import ServerConfig
 
 logger = logging.getLogger(__name__)
@@ -66,18 +67,21 @@ class StateAggregator:
         franka: FrankaBackend,
         gripper: GripperBackend,
         camera: CameraBackend | None = None,
+        mocap: MocapBackend | None = None,
     ) -> None:
         self._cfg = config
         self._base = base
         self._franka = franka
         self._gripper = gripper
         self._camera = camera
+        self._mocap = mocap
         self._state: dict[str, Any] = {}
         self._task: asyncio.Task | None = None
         self._last_base_reconnect: float = 0.0
         self._last_franka_reconnect: float = 0.0
         self._last_gripper_reconnect: float = 0.0
         self._last_camera_reconnect: float = 0.0
+        self._last_mocap_reconnect: float = 0.0
         # Position-delta tracking for movement detection
         self._prev_arm_q: list[float] = []
         self._prev_base_pose: list[float] = []
@@ -92,7 +96,13 @@ class StateAggregator:
         """Return timestamp of last detected robot movement."""
         return self._last_moved_at
 
-    def _update_movement_tracking(self, arm_q: list, base_pose: list, gripper_pos: float) -> None:
+    def _update_movement_tracking(
+        self,
+        arm_q: list,
+        base_pose: list,
+        gripper_pos: float,
+        base_velocity: list | None = None,
+    ) -> None:
         """Compare current positions to previous and update last_moved_at."""
         moved = False
 
@@ -102,6 +112,8 @@ class StateAggregator:
         if base_pose and self._prev_base_pose:
             if any(abs(a - b) > 0.005 for a, b in zip(base_pose, self._prev_base_pose)):
                 moved = True
+        if base_velocity and any(abs(v) > 0.01 for v in base_velocity):
+            moved = True
         if self._prev_gripper_pos and abs(gripper_pos - self._prev_gripper_pos) > 0.5:
             moved = True
 
@@ -173,6 +185,17 @@ class StateAggregator:
                 except Exception as e:
                     logger.debug("Camera backend reconnect failed: %s", e)
 
+        # Try to reconnect mocap backend
+        if self._mocap and not self._mocap.is_connected:
+            if now - self._last_mocap_reconnect > RECONNECT_INTERVAL:
+                self._last_mocap_reconnect = now
+                try:
+                    await self._mocap.connect()
+                    if self._mocap.is_connected:
+                        logger.info("Reconnected to mocap backend")
+                except Exception as e:
+                    logger.debug("Mocap backend reconnect failed: %s", e)
+
     async def _poll_loop(self) -> None:
         interval = 1.0 / self._cfg.base.poll_hz
         while True:
@@ -205,19 +228,43 @@ class StateAggregator:
                     except Exception as e:
                         logger.debug("Gripper state poll failed: %s", e)
 
-                base_pose = base_state.get("base_pose", [0, 0, 0])
+                # Poll mocap (non-blocking, fast)
+                mocap_state = {}
+                if self._mocap and self._mocap.is_connected:
+                    try:
+                        mocap_state = await loop.run_in_executor(None, self._mocap.get_state)
+                    except Exception as e:
+                        logger.debug("Mocap state poll failed: %s", e)
+
+                # Choose base pose source: prefer mocap when tracking
+                odom_pose = base_state.get("base_pose", [0, 0, 0])
                 base_velocity = base_state.get("base_velocity", [0, 0, 0])
+
+                if mocap_state.get("tracking_valid", False):
+                    base_pose = mocap_state["mocap_pose"]
+                    pose_source = "mocap"
+                else:
+                    base_pose = odom_pose
+                    pose_source = "odom"
+
                 ee_pose = franka_state.get("ee_pose", [])
                 world_ee_pose = compute_world_ee_pose(base_pose, ee_pose) if ee_pose else []
                 arm_q = franka_state.get("q", [])
                 gripper_pos = gripper_state.get("position_mm", 0.0)
 
-                # Track position deltas for movement detection
-                self._update_movement_tracking(arm_q, base_pose, gripper_pos)
+                # Track position deltas and velocity for movement detection
+                self._update_movement_tracking(arm_q, base_pose, gripper_pos, base_velocity)
 
                 self._state = {
                     "timestamp": time.time(),
-                    "base": {"pose": base_pose, "velocity": base_velocity},
+                    "base": {
+                        "pose": base_pose,
+                        "velocity": base_velocity,
+                        "pose_source": pose_source,
+                        "odom_pose": odom_pose,
+                        "mocap_pose": mocap_state.get("mocap_pose"),
+                        "mocap_tracking": mocap_state.get("tracking_valid", False),
+                    },
                     "arm": {
                         "q": arm_q,
                         "dq": franka_state.get("dq", []),
@@ -225,6 +272,7 @@ class StateAggregator:
                         "ee_pose_world": world_ee_pose,
                         "ee_wrench": franka_state.get("ee_wrench", []),
                         "mode": franka_state.get("control_mode", 0),
+                        "robot_mode": franka_state.get("robot_mode", 0),
                         "auto_hold_active": franka_state.get("auto_hold_active", False),
                         "q_target": franka_state.get("q_target", []),
                         "pose_target": franka_state.get("pose_target", []),

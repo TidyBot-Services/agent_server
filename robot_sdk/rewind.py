@@ -113,6 +113,10 @@ class RewindAPI:
         url = f"{self._server_url}{path}"
         headers = {"Content-Type": "application/json"}
 
+        api_key = os.getenv("ROBOT_API_KEY")
+        if api_key:
+            headers["X-API-Key"] = api_key
+
         if require_lease and self._lease_id:
             headers["X-Lease-Id"] = self._lease_id
 

@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 from typing import Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
 
+from auth import require_admin
 from services import ServiceManager
 
 router = APIRouter(prefix="/services", tags=["services"])
@@ -1162,6 +1163,7 @@ async function pollCodeLogs() {
 
       const holder = r.holder || "unknown";
       const clientHost = r.client_host || "";
+      const apiKeyName = r.api_key_name || "";
       const dur = r.duration?.toFixed(1) || "0";
       const execId = r.execution_id || "";
       const expanded = _expandedRows.has(execId);
@@ -1201,6 +1203,7 @@ async function pollCodeLogs() {
           <div style="min-width: 0; display: flex; align-items: center; gap: 6px; flex-wrap: nowrap;">
             <span style="color: #58a6ff; font-size: 10px;">&#9660;</span>
             <span style="color: ${statusColor}; font-weight: 700; padding: 1px 5px; background: ${statusColor}22; border-radius: 3px; font-size: 11px;">${statusLabel}</span>
+            ${apiKeyName ? `<span style="color: #58a6ff; font-size: 10px;">${escHtml(apiKeyName)}</span>` : ""}
             <span style="color: #888;">${escHtml(holder)}</span>
             <span style="color: #666; font-size: 10px;">${dur}s</span>
             ${timeStr ? `<span style="color: #555; font-size: 10px;">${timeStr}</span>` : ""}
@@ -1215,6 +1218,7 @@ async function pollCodeLogs() {
       // Info column
       let infoCol = `<div style="display: flex; align-items: center; gap: 6px; margin-bottom: 4px; flex-wrap: wrap;">
         <span style="color: ${statusColor}; font-weight: 700; font-size: 12px; padding: 1px 6px; background: ${statusColor}22; border-radius: 3px;">${statusLabel}</span>
+        ${apiKeyName ? `<span style="color: #58a6ff; font-size: 11px;">${escHtml(apiKeyName)}</span>` : ""}
         <span style="color: #e6edf3; font-weight: 600; font-size: 12px;">${escHtml(holder)}</span>
       </div>`;
       if (r.error && !ok) {
@@ -1251,6 +1255,7 @@ async function pollCodeLogs() {
         <div onclick="toggleExecRow('${execId}')" style="padding: 6px 8px; cursor: pointer; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid ${borderColor};">
           <span style="color: #58a6ff; font-size: 10px;">&#9650;</span>
           <span style="color: ${statusColor}; font-weight: 700; font-size: 11px; padding: 1px 5px; background: ${statusColor}22; border-radius: 3px;">${statusLabel}</span>
+          ${apiKeyName ? `<span style="color: #58a6ff; font-size: 10px;">${escHtml(apiKeyName)}</span>` : ""}
           <span style="color: #888; font-size: 11px;">${escHtml(holder)}</span>
           <span style="color: #666; font-size: 10px;">${dur}s</span>
           ${timeStr ? `<span style="color: #555; font-size: 10px;">${timeStr}</span>` : ""}
@@ -1535,29 +1540,54 @@ def create_router(service_mgr: ServiceManager | None, arm_monitor=None):
     """
     service_manager_enabled = service_mgr is not None
 
-    @router.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
-    async def dashboard():
+    @router.get("/dashboard", response_class=HTMLResponse, include_in_schema=False,
+                dependencies=[Depends(require_admin)])
+    async def dashboard(request: Request):
         """Web dashboard for service management."""
         # Inject the service_manager_enabled flag into the HTML
         html = DASHBOARD_HTML.replace(
             "let serviceManagerEnabled = true;",
             f"let serviceManagerEnabled = {'true' if service_manager_enabled else 'false'};"
         )
+        # Inject API key into JS so fetch() calls include it
+        api_key = request.query_params.get("api_key", "")
+        auth_snippet = f"""<script>
+var __apiKey = "{api_key}";
+(function() {{
+  var _origFetch = window.fetch;
+  window.fetch = function(url, opts) {{
+    if (__apiKey && typeof url === 'string' && url.startsWith('/')) {{
+      opts = opts || {{}};
+      opts.headers = opts.headers || {{}};
+      if (opts.headers instanceof Headers) {{
+        opts.headers.set('X-API-Key', __apiKey);
+      }} else {{
+        opts.headers['X-API-Key'] = __apiKey;
+      }}
+    }}
+    return _origFetch.call(this, url, opts);
+  }};
+}})();
+</script>"""
+        html = html.replace("<script>", auth_snippet + "\n<script>", 1)
         return html
 
-    @router.get("/config", include_in_schema=False)
+    @router.get("/config", include_in_schema=False,
+                dependencies=[Depends(require_admin)])
     async def get_config():
         """Get dashboard configuration (service manager status, etc.)."""
         return {"service_manager_enabled": service_manager_enabled}
 
     # Only add service management routes if service manager is enabled
     if service_mgr is not None:
-        @router.get("", include_in_schema=False)
+        @router.get("", include_in_schema=False,
+                    dependencies=[Depends(require_admin)])
         async def list_services():
             """List all services with status, PID, uptime."""
             return service_mgr.get_status()
 
-        @router.post("/unlock/lock", include_in_schema=False)
+        @router.post("/unlock/lock", include_in_schema=False,
+                     dependencies=[Depends(require_admin)])
         async def lock_robot():
             """Lock the robot by stopping the unlock service.
 
@@ -1572,7 +1602,8 @@ def create_router(service_mgr: ServiceManager | None, arm_monitor=None):
 
             return {"ok": True, "message": "Robot locked (unlock service stopped)"}
 
-        @router.get("/{name}", include_in_schema=False)
+        @router.get("/{name}", include_in_schema=False,
+                    dependencies=[Depends(require_admin)])
         async def get_service(name: str):
             """Get status of a specific service."""
             result = service_mgr.get_status(name)
@@ -1580,7 +1611,8 @@ def create_router(service_mgr: ServiceManager | None, arm_monitor=None):
                 return {"ok": False, **result}
             return result
 
-        @router.post("/{name}/start", include_in_schema=False)
+        @router.post("/{name}/start", include_in_schema=False,
+                     dependencies=[Depends(require_admin)])
         async def start_service(name: str):
             """Start a service."""
             result = await service_mgr.start_service(name)
@@ -1588,14 +1620,16 @@ def create_router(service_mgr: ServiceManager | None, arm_monitor=None):
                 arm_monitor.allow_recovery()
             return result
 
-        @router.post("/{name}/stop", include_in_schema=False)
+        @router.post("/{name}/stop", include_in_schema=False,
+                     dependencies=[Depends(require_admin)])
         async def stop_service(name: str):
             """Stop a service."""
             if name == "franka_server" and arm_monitor is not None:
                 arm_monitor.suppress_recovery()
             return await service_mgr.stop_service(name)
 
-        @router.post("/{name}/restart", include_in_schema=False)
+        @router.post("/{name}/restart", include_in_schema=False,
+                     dependencies=[Depends(require_admin)])
         async def restart_service(name: str):
             """Restart a service."""
             if name == "franka_server" and arm_monitor is not None:
@@ -1605,7 +1639,8 @@ def create_router(service_mgr: ServiceManager | None, arm_monitor=None):
                 arm_monitor.allow_recovery()
             return result
 
-        @router.get("/{name}/logs", include_in_schema=False)
+        @router.get("/{name}/logs", include_in_schema=False,
+                    dependencies=[Depends(require_admin)])
         async def get_logs(name: str, lines: int = Query(default=50, ge=1, le=1000)):
             """Get recent log output for a service."""
             return service_mgr.get_logs(name, lines=lines)

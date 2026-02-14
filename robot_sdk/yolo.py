@@ -6,10 +6,12 @@ Fetches camera frames from the agent server and sends them for inference.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from io import BytesIO
 from typing import Dict, List, Optional, Tuple
 
 # Use urllib (allowed in wrapper code, blocked for user code)
@@ -30,9 +32,14 @@ class Detection:
     class_name: str
     confidence: float
     bbox: List[float]  # [x1, y1, x2, y2] in pixels
+    area: float = 0.0  # bbox area in pixels
+    has_mask: bool = False
+    mask: Optional[np.ndarray] = field(default=None, repr=False)  # (H, W) float32
+    mask_shape: Optional[List[int]] = None
 
     def __repr__(self) -> str:
-        return f"Detection({self.class_name}: {self.confidence:.2f}, bbox={self.bbox})"
+        mask_str = f", mask={self.mask.shape}" if self.mask is not None else ""
+        return f"Detection({self.class_name}: {self.confidence:.2f}, bbox={self.bbox}{mask_str})"
 
 
 @dataclass
@@ -41,9 +48,12 @@ class SegmentationResult:
     detections: List[Detection]
     image_shape: tuple  # (H, W, C)
     inference_time: float  # seconds
+    classes: List[str] = field(default_factory=list)  # queried class names
+    total_masks: int = 0
 
     def __repr__(self) -> str:
-        return f"SegmentationResult({len(self.detections)} detections, {self.inference_time:.2f}s)"
+        mask_str = f", {self.total_masks} masks" if self.total_masks else ""
+        return f"SegmentationResult({len(self.detections)} detections{mask_str}, {self.inference_time:.2f}s)"
 
     def get_by_class(self, class_name: str) -> List[Detection]:
         """Get all detections of a specific class.
@@ -71,6 +81,61 @@ class SegmentationResult:
         """
         return list(set(d.class_name for d in self.detections))
 
+    def get_masks(self) -> List[np.ndarray]:
+        """Return all detection masks (skipping detections without masks).
+
+        Returns:
+            List of (H, W) float32 mask arrays
+
+        Example:
+            masks = result.get_masks()
+            print(f"Got {len(masks)} masks")
+        """
+        return [d.mask for d in self.detections if d.mask is not None]
+
+    def get_mask_for(self, class_name: str) -> Optional[np.ndarray]:
+        """Return the mask for the first detection matching class_name.
+
+        Args:
+            class_name: Class name to get mask for
+
+        Returns:
+            (H, W) float32 mask array, or None if no mask found
+
+        Example:
+            cup_mask = result.get_mask_for("cup")
+            if cup_mask is not None:
+                pixels = (cup_mask > 0.5).sum()
+        """
+        for d in self.detections:
+            if d.class_name == class_name and d.mask is not None:
+                return d.mask
+        return None
+
+    def get_combined_mask(self, threshold: float = 0.5) -> Optional[np.ndarray]:
+        """Return union of all masks as a single binary mask.
+
+        Takes the element-wise max of all detection masks, then thresholds.
+
+        Args:
+            threshold: Confidence threshold for binarization (default: 0.5)
+
+        Returns:
+            (H, W) uint8 binary mask, or None if no masks available
+
+        Example:
+            binary = result.get_combined_mask()
+            if binary is not None:
+                print(f"Object pixels: {binary.sum()}")
+        """
+        masks = self.get_masks()
+        if not masks:
+            return None
+        combined = np.zeros_like(masks[0], dtype=np.float32)
+        for m in masks:
+            combined = np.maximum(combined, m)
+        return (combined > threshold).astype(np.uint8)
+
 
 @dataclass
 class Detection3D:
@@ -92,6 +157,9 @@ class Detection3D:
         position_3d: [x, y, z] in meters in camera optical frame (NaN if depth invalid)
         depth_meters: Depth at bbox center in meters (NaN if invalid)
         pixel_center: [u, v] bbox center pixel coordinates
+        area: Bounding box area in pixels
+        has_mask: Whether a segmentation mask is available
+        mask: Per-pixel segmentation mask (H, W) float32, or None
     """
     class_name: str
     confidence: float
@@ -99,13 +167,17 @@ class Detection3D:
     position_3d: List[float]  # [x, y, z] meters, camera frame
     depth_meters: float
     pixel_center: List[int]  # [u, v]
+    area: float = 0.0
+    has_mask: bool = False
+    mask: Optional[np.ndarray] = field(default=None, repr=False)
 
     def __repr__(self) -> str:
         if np.isnan(self.depth_meters):
             pos = "no depth"
         else:
             pos = f"[{self.position_3d[0]:.2f}, {self.position_3d[1]:.2f}, {self.position_3d[2]:.2f}]m"
-        return f"Detection3D({self.class_name}: {self.confidence:.2f}, {pos})"
+        mask_str = ", mask" if self.mask is not None else ""
+        return f"Detection3D({self.class_name}: {self.confidence:.2f}, {pos}{mask_str})"
 
 
 @dataclass
@@ -121,10 +193,12 @@ class SegmentationResult3D:
     image_shape: tuple  # (H, W, C)
     inference_time: float
     intrinsics: Dict  # Camera intrinsics used for projection
+    total_masks: int = 0
 
     def __repr__(self) -> str:
         valid = sum(1 for d in self.detections if not np.isnan(d.depth_meters))
-        return f"SegmentationResult3D({len(self.detections)} detections, {valid} with depth)"
+        mask_str = f", {self.total_masks} masks" if self.total_masks else ""
+        return f"SegmentationResult3D({len(self.detections)} detections, {valid} with depth{mask_str})"
 
     def get_by_class(self, class_name: str) -> List[Detection3D]:
         """Get all detections of a specific class.
@@ -158,6 +232,27 @@ class SegmentationResult3D:
         if not valid:
             return None
         return min(valid, key=lambda d: d.depth_meters)
+
+    def get_masks(self) -> List[np.ndarray]:
+        """Return all detection masks (skipping detections without masks)."""
+        return [d.mask for d in self.detections if d.mask is not None]
+
+    def get_mask_for(self, class_name: str) -> Optional[np.ndarray]:
+        """Return the mask for the first detection matching class_name."""
+        for d in self.detections:
+            if d.class_name == class_name and d.mask is not None:
+                return d.mask
+        return None
+
+    def get_combined_mask(self, threshold: float = 0.5) -> Optional[np.ndarray]:
+        """Return union of all masks as a single binary mask (uint8)."""
+        masks = self.get_masks()
+        if not masks:
+            return None
+        combined = np.zeros_like(masks[0], dtype=np.float32)
+        for m in masks:
+            combined = np.maximum(combined, m)
+        return (combined > threshold).astype(np.uint8)
 
 
 # Visualization save directory
@@ -213,6 +308,14 @@ class YoloAPI:
         except Exception:
             return False
 
+    def _agent_headers(self) -> dict:
+        """Return headers for agent server requests (includes API key if set)."""
+        headers = {}
+        api_key = os.getenv("ROBOT_API_KEY")
+        if api_key:
+            headers["X-API-Key"] = api_key
+        return headers
+
     def _fetch_camera_frame(self, camera_id: Optional[str] = None) -> bytes:
         """Fetch a JPEG frame from the agent server's camera endpoint.
 
@@ -231,7 +334,7 @@ class YoloAPI:
             url = f"{self._agent_url}/state/cameras"
 
         try:
-            req = urllib.request.Request(url)
+            req = urllib.request.Request(url, headers=self._agent_headers())
             with urllib.request.urlopen(req, timeout=10) as resp:
                 if resp.status != 200:
                     raise YoloError(f"Camera returned status {resp.status}")
@@ -290,15 +393,19 @@ class YoloAPI:
         image_bytes: bytes,
         text_prompt: str,
         confidence: float = 0.3,
+        mask_format: str = "none",
     ) -> dict:
         """Send image to YOLO /segment endpoint for structured detections.
+
+        Args:
+            mask_format: "npz" (compressed masks), "raw" (float32), or "none"
 
         Returns:
             Raw response dict from YOLO server
         """
         body, content_type = self._build_multipart(
             image_bytes, text_prompt, confidence,
-            extra_fields={"mask_format": "none"},
+            extra_fields={"mask_format": mask_format},
         )
 
         try:
@@ -352,24 +459,64 @@ class YoloAPI:
         except urllib.error.URLError as e:
             raise YoloError(f"YOLO server unavailable: {e.reason}") from e
 
+    @staticmethod
+    def _decode_masks(
+        masks_data: str,
+        masks_shape: List[int],
+        encoding: Optional[str] = None,
+    ) -> List[np.ndarray]:
+        """Decode base64-encoded mask data to a list of numpy arrays."""
+        raw = base64.b64decode(masks_data)
+
+        if encoding == "npz":
+            npz = np.load(BytesIO(raw))
+            masks_array = npz["masks"]
+        elif encoding == "raw_float32" or encoding is None:
+            masks_array = np.frombuffer(raw, dtype=np.float32).reshape(masks_shape)
+        else:
+            try:
+                npz = np.load(BytesIO(raw))
+                masks_array = npz["masks"]
+            except Exception:
+                masks_array = np.frombuffer(raw, dtype=np.float32).reshape(masks_shape)
+
+        return [masks_array[i] for i in range(masks_array.shape[0])]
+
     def _parse_response(self, response: dict, image_shape: tuple) -> SegmentationResult:
         """Parse YOLO server response into SegmentationResult."""
-        detections = []
         raw_dets = response.get("detections", response.get("results", []))
         inference_time = response.get("inference_time", 0.0)
 
+        # Decode masks if present
+        masks: List[Optional[np.ndarray]] = []
+        if "masks_data" in response and "masks_shape" in response:
+            masks = self._decode_masks(
+                response["masks_data"],
+                response["masks_shape"],
+                response.get("masks_encoding"),
+            )
+
+        detections = []
         for det in raw_dets:
             bbox = det.get("bbox", det.get("box", [0, 0, 0, 0]))
+            idx = det.get("index", len(detections))
+            mask = masks[idx] if idx < len(masks) else None
             detections.append(Detection(
                 class_name=det.get("class_name", det.get("label", "unknown")),
                 confidence=det.get("confidence", det.get("score", 0.0)),
                 bbox=bbox,
+                area=det.get("area", 0.0),
+                has_mask=det.get("has_mask", mask is not None),
+                mask=mask,
+                mask_shape=det.get("mask_shape"),
             ))
 
         return SegmentationResult(
             detections=detections,
             image_shape=image_shape,
             inference_time=inference_time,
+            classes=response.get("classes", []),
+            total_masks=response.get("total_masks", len(masks)),
         )
 
     def segment_camera(
@@ -378,6 +525,7 @@ class YoloAPI:
         camera_id: Optional[str] = None,
         confidence: float = 0.3,
         save_visualization: bool = True,
+        mask_format: str = "none",
     ) -> SegmentationResult:
         """Segment objects in the current camera view.
 
@@ -390,9 +538,13 @@ class YoloAPI:
             confidence: Minimum detection confidence 0.0-1.0 (default: 0.3)
             save_visualization: Whether to save annotated image (default: True).
                 Visualization accessible via GET /yolo/visualization
+            mask_format: Segmentation mask format — "npz" (compressed), "raw", or
+                "none" (default). When not "none", each Detection includes a per-pixel
+                mask array and mask helper methods are available on the result.
 
         Returns:
-            SegmentationResult with list of detections (class_name, confidence, bbox)
+            SegmentationResult with list of detections (class_name, confidence, bbox,
+            and optionally mask)
 
         Raises:
             YoloError: If camera or YOLO server unavailable
@@ -405,6 +557,10 @@ class YoloAPI:
             # Filter by class
             cups = result.get_by_class("cup")
             print(f"Found {len(cups)} cups")
+
+            # With masks
+            result = yolo.segment_camera("cup", mask_format="npz")
+            cup_mask = result.get_mask_for("cup")  # (H, W) float32
         """
         import cv2
 
@@ -418,7 +574,7 @@ class YoloAPI:
             raise YoloError("Failed to decode camera frame")
 
         # 3. Send to YOLO server for structured detections
-        response = self._send_to_yolo(jpeg_bytes, text_prompt, confidence)
+        response = self._send_to_yolo(jpeg_bytes, text_prompt, confidence, mask_format)
 
         # 4. Parse response
         result = self._parse_response(response, image.shape)
@@ -442,6 +598,7 @@ class YoloAPI:
         text_prompt: str,
         confidence: float = 0.3,
         save_visualization: bool = True,
+        mask_format: str = "none",
     ) -> SegmentationResult:
         """Segment objects in a provided image array.
 
@@ -450,6 +607,7 @@ class YoloAPI:
             text_prompt: Comma-separated object names to detect
             confidence: Minimum detection confidence 0.0-1.0 (default: 0.3)
             save_visualization: Whether to save annotated image (default: True)
+            mask_format: Segmentation mask format — "npz", "raw", or "none" (default)
 
         Returns:
             SegmentationResult with list of detections
@@ -460,7 +618,8 @@ class YoloAPI:
         Example:
             import numpy as np
             # image = ... (some BGR numpy array)
-            result = yolo.segment_image(image, "person, chair")
+            result = yolo.segment_image(image, "person, chair", mask_format="npz")
+            mask = result.get_mask_for("person")
         """
         import cv2
 
@@ -471,7 +630,7 @@ class YoloAPI:
         jpeg_bytes = jpeg_buf.tobytes()
 
         # Send to YOLO server for structured detections
-        response = self._send_to_yolo(jpeg_bytes, text_prompt, confidence)
+        response = self._send_to_yolo(jpeg_bytes, text_prompt, confidence, mask_format)
 
         # Parse response
         result = self._parse_response(response, image.shape)
@@ -506,7 +665,7 @@ class YoloAPI:
             url = f"{self._agent_url}/cameras/any/frame?stream=depth"
 
         try:
-            req = urllib.request.Request(url)
+            req = urllib.request.Request(url, headers=self._agent_headers())
             with urllib.request.urlopen(req, timeout=10) as resp:
                 if resp.status != 200:
                     raise YoloError(f"Depth frame returned status {resp.status}")
@@ -535,7 +694,7 @@ class YoloAPI:
             url = f"{self._agent_url}/cameras/any/intrinsics"
 
         try:
-            req = urllib.request.Request(url)
+            req = urllib.request.Request(url, headers=self._agent_headers())
             with urllib.request.urlopen(req, timeout=10) as resp:
                 if resp.status != 200:
                     raise YoloError(f"Intrinsics returned status {resp.status}")
@@ -611,6 +770,7 @@ class YoloAPI:
         confidence: float = 0.3,
         save_visualization: bool = True,
         depth_region_size: int = 5,
+        mask_format: str = "none",
     ) -> SegmentationResult3D:
         """Segment objects and project to 3D using depth.
 
@@ -624,6 +784,7 @@ class YoloAPI:
             confidence: Minimum detection confidence 0.0-1.0 (default: 0.3)
             save_visualization: Whether to save annotated image (default: True)
             depth_region_size: Pixel region for median depth sampling (default: 5)
+            mask_format: Segmentation mask format — "npz", "raw", or "none" (default)
 
         Returns:
             SegmentationResult3D with 3D positions for each detection.
@@ -662,7 +823,7 @@ class YoloAPI:
         intrinsics = self._fetch_intrinsics(camera_id)
 
         # 4. Run YOLO segmentation on color
-        response = self._send_to_yolo(jpeg_bytes, text_prompt, confidence)
+        response = self._send_to_yolo(jpeg_bytes, text_prompt, confidence, mask_format)
         result_2d = self._parse_response(response, color_image.shape)
 
         # 5. Project each detection to 3D
@@ -686,6 +847,9 @@ class YoloAPI:
                 position_3d=position_3d,
                 depth_meters=depth_m,
                 pixel_center=[u, v],
+                area=det.area,
+                has_mask=det.has_mask,
+                mask=det.mask,
             ))
 
         # 6. Save visualization
@@ -704,4 +868,5 @@ class YoloAPI:
             image_shape=color_image.shape,
             inference_time=result_2d.inference_time,
             intrinsics=intrinsics,
+            total_masks=result_2d.total_masks,
         )

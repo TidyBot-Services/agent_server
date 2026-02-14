@@ -9,7 +9,7 @@ from typing import Optional
 router = APIRouter()
 
 
-def create_router(state_agg, camera_backend, lease_mgr, base_backend, franka_backend, gripper_backend, system_logger):
+def create_router(state_agg, camera_backend, lease_mgr, base_backend, franka_backend, gripper_backend, mocap_backend, system_logger):
     @router.get("/state")
     async def get_state():
         return state_agg.state
@@ -81,6 +81,24 @@ def create_router(state_agg, camera_backend, lease_mgr, base_backend, franka_bac
             return JSONResponse({"error": "intrinsics not available"}, status_code=503)
         return intrinsics
 
+    @router.get("/state/base/odom")
+    async def get_base_odom():
+        """Get raw base odometry pose and velocity."""
+        base = state_agg.state.get("base", {})
+        return {
+            "odom_pose": base.get("odom_pose", [0, 0, 0]),
+            "velocity": base.get("velocity", [0, 0, 0]),
+        }
+
+    @router.get("/state/base/mocap")
+    async def get_base_mocap():
+        """Get raw mocap pose and tracking status."""
+        base = state_agg.state.get("base", {})
+        return {
+            "mocap_pose": base.get("mocap_pose"),
+            "tracking_valid": base.get("mocap_tracking", False),
+        }
+
     @router.get("/trajectory")
     async def get_trajectory():
         waypoints = [wp.to_dict() for wp in system_logger.get_waypoints()]
@@ -105,6 +123,7 @@ def create_router(state_agg, camera_backend, lease_mgr, base_backend, franka_bac
                 "franka": franka_backend.is_connected,
                 "gripper": gripper_backend.is_connected,
                 "cameras": camera_backend.is_connected,
+                "mocap": mocap_backend.is_connected,
             },
         }
 

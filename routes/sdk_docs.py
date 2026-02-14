@@ -5,6 +5,7 @@ Introspects the robot_sdk module at runtime to generate accurate documentation.
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import logging
 from typing import Any, Optional
@@ -60,6 +61,41 @@ def get_class_info(cls: type) -> dict:
     }
 
 
+def get_dataclass_info(cls: type) -> dict:
+    """Extract dataclass field info and public methods/properties."""
+    fields = {}
+    for f in dataclasses.fields(cls):
+        type_str = str(f.type).replace("typing.", "")
+        desc = type_str
+        # Include default if meaningful
+        if f.default is not dataclasses.MISSING:
+            desc += f" (default: {f.default!r})"
+        elif f.default_factory is not dataclasses.MISSING:
+            desc += f" (default: {f.default_factory()!r})"
+        fields[f.name] = desc
+
+    methods = {}
+    for name, obj in inspect.getmembers(cls):
+        if name.startswith("_"):
+            continue
+        if isinstance(obj, property):
+            methods[name] = {
+                "kind": "property",
+                "docstring": inspect.getdoc(obj.fget) or "",
+            }
+        elif inspect.isfunction(obj):
+            methods[name] = {
+                "kind": "method",
+                **get_method_info(obj),
+            }
+
+    return {
+        "description": inspect.getdoc(cls) or "",
+        "fields": fields,
+        "methods": methods,
+    }
+
+
 def generate_sdk_docs() -> dict:
     """Generate SDK documentation by introspecting robot_sdk module."""
     docs = {
@@ -80,6 +116,16 @@ print(f"Current joints: {joints}")
 result = yolo.segment_camera("cup, bottle, table")
 for det in result.detections:
     print(f"{det.class_name}: {det.confidence:.2f}, bbox={det.bbox}")
+
+# Detect with segmentation masks
+result = yolo.segment_camera("cup, bottle", mask_format="npz")
+cup_mask = result.get_mask_for("cup")       # (H, W) float32 or None
+all_masks = result.get_masks()               # list of mask arrays
+binary = result.get_combined_mask()          # union of all masks, uint8
+for det in result.detections:
+    if det.mask is not None:
+        pixels = (det.mask > 0.5).sum()
+        print(f"{det.class_name}: {pixels} mask pixels, area={det.area:.0f}")
 
 # Detect objects with YOLO + depth (3D positions)
 result3d = yolo.segment_camera_3d("person, cup")
@@ -103,6 +149,7 @@ if rewind.is_out_of_bounds():
                 "Rewind coordinates arm and base together",
                 "YOLO segmentation auto-saves visualization to GET /yolo/visualization",
                 "YOLO 3D segmentation uses depth camera for object positions in meters",
+                "YOLO: pass mask_format='npz' to get per-pixel segmentation masks on detections",
             ],
         },
     }
@@ -151,6 +198,12 @@ if rewind.is_out_of_bounds():
             "description": "YOLO object detection and segmentation using camera frames",
             **get_class_info(YoloAPI),
         }
+
+        # Add YOLO result types (auto-introspected from dataclasses)
+        from robot_sdk.yolo import Detection, Detection3D, SegmentationResult, SegmentationResult3D
+        docs["yolo_types"] = {}
+        for cls in [Detection, SegmentationResult, Detection3D, SegmentationResult3D]:
+            docs["yolo_types"][cls.__name__] = get_dataclass_info(cls)
 
         # Add constants
         docs["constants"] = {
@@ -274,6 +327,32 @@ async def get_sdk_markdown():
             md += f"#### `{method_name}{sig}`\n\n"
             if method_info.get("docstring"):
                 md += f"{method_info['docstring']}\n\n"
+
+    # YOLO result types
+    if "yolo_types" in docs:
+        md += "## YOLO Result Types\n\n"
+        for type_name, type_info in docs["yolo_types"].items():
+            md += f"### `{type_name}`\n\n"
+            md += f"{type_info['description']}\n\n"
+            md += "**Fields:**\n"
+            for field_name, field_desc in type_info["fields"].items():
+                md += f"- `{field_name}`: {field_desc}\n"
+            md += "\n"
+            if type_info.get("methods"):
+                md += "**Methods:**\n"
+                for method_name, method_info in type_info["methods"].items():
+                    if isinstance(method_info, dict):
+                        kind = method_info.get("kind", "method")
+                        doc = method_info.get("docstring", "")
+                        sig = method_info.get("signature", "()")
+                        if kind == "property":
+                            md += f"- `{method_name}` (property) — {doc}\n"
+                        else:
+                            first_line = doc.split("\n")[0] if doc else ""
+                            md += f"- `{method_name}{sig}` — {first_line}\n"
+                    else:
+                        md += f"- `{method_name}` — {method_info}\n"
+                md += "\n"
 
     # Constants
     if "constants" in docs:
