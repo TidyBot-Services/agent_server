@@ -226,12 +226,22 @@ def generate_guide() -> dict:
                         ),
                     },
                     {
-                        "name": "Camera frames (use sparingly)",
+                        "name": "Recorded frames (preferred over live camera)",
                         "description": (
-                            "Poll `GET /cameras/{id}/frame` to see what the robot "
-                            "sees. Each frame is a JPEG image that costs vision "
-                            "tokens. Only fetch frames when you need visual "
-                            "confirmation — not in a tight loop."
+                            "Camera frames are automatically recorded at 0.5 Hz "
+                            "during every code execution. After execution, retrieve "
+                            "them via `GET /code/recordings/{execution_id}` (metadata) "
+                            "and `GET /code/recordings/{execution_id}/frames/{filename}` "
+                            "(JPEG). This avoids vision token cost from live polling."
+                        ),
+                    },
+                    {
+                        "name": "Live camera (use sparingly)",
+                        "description": (
+                            "`GET /cameras/{id}/frame` returns a live JPEG. "
+                            "Each frame costs vision tokens. Only use when you "
+                            "need a live view outside of code execution — "
+                            "recorded frames are preferred during/after execution."
                         ),
                     },
                     {
@@ -246,8 +256,8 @@ def generate_guide() -> dict:
                     "If something looks wrong, stop execution with "
                     "`POST /code/stop` and use rewind to undo. "
                     "Prefer adding print() statements to your code for "
-                    "debugging over polling camera frames — text output "
-                    "costs far fewer tokens than images."
+                    "debugging. Use recorded frames after execution to verify "
+                    "results instead of polling live camera feeds."
                 ),
             },
             "state_observation": {
@@ -283,6 +293,21 @@ def generate_guide() -> dict:
                         "method": "WS",
                         "path": "/ws/cameras",
                         "description": "Streaming camera feeds",
+                    },
+                    {
+                        "method": "GET",
+                        "path": "/code/recordings",
+                        "description": "List execution IDs with recorded frames",
+                    },
+                    {
+                        "method": "GET",
+                        "path": "/code/recordings/{execution_id}",
+                        "description": "Recording metadata (timestamps, cameras, frame count)",
+                    },
+                    {
+                        "method": "GET",
+                        "path": "/code/recordings/{execution_id}/frames/{filename}",
+                        "description": "Retrieve a recorded JPEG frame",
                     },
                 ],
             },
