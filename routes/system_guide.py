@@ -218,32 +218,36 @@ def generate_guide() -> dict:
                 ),
                 "tips": [
                     {
-                        "name": "Camera frames",
+                        "name": "Terminal output (preferred)",
                         "description": (
-                            "Poll `GET /cameras/{id}/frame` to see what the robot "
-                            "sees. Send frames to a VLM to assess whether the task "
-                            "is progressing correctly."
+                            "Poll `GET /code/status?offset=N` for incremental "
+                            "stdout/stderr. Use the returned line count as the "
+                            "next offset. This is cheap — text only, no images."
                         ),
                     },
                     {
-                        "name": "Terminal output",
+                        "name": "Camera frames (use sparingly)",
                         "description": (
-                            "Poll `GET /code/status` for live stdout/stderr — "
-                            "use `?stdout_offset=N` to get only new output. "
-                            "print() statements in your code show up here."
+                            "Poll `GET /cameras/{id}/frame` to see what the robot "
+                            "sees. Each frame is a JPEG image that costs vision "
+                            "tokens. Only fetch frames when you need visual "
+                            "confirmation — not in a tight loop."
                         ),
                     },
                     {
                         "name": "Robot state",
                         "description": (
-                            "Poll `GET /state` or stream via `WS /ws/state` for "
-                            "joint positions, base pose, and gripper status."
+                            "Poll `GET /state` for joint positions, base pose, "
+                            "and gripper status. Lightweight and cheap."
                         ),
                     },
                 ],
                 "note": (
                     "If something looks wrong, stop execution with "
-                    "`POST /code/stop` and use rewind to undo."
+                    "`POST /code/stop` and use rewind to undo. "
+                    "Prefer adding print() statements to your code for "
+                    "debugging over polling camera frames — text output "
+                    "costs far fewer tokens than images."
                 ),
             },
             "state_observation": {
