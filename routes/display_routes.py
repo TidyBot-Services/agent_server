@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
+from auth import KeyStore, check_ws_auth
 from display_state import DisplayBroadcaster, VALID_EXPRESSIONS
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,7 @@ FACE_HTML = r"""<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Robot Face</title>
+<title>🤖 Robot Face</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { width: 100vw; height: 100vh; overflow: hidden; background: #1a1a2e; color: #eee;
@@ -70,7 +71,7 @@ FACE_HTML = r"""<!DOCTYPE html>
   .face-wrap.corner { position: fixed; top: 20px; right: 20px; width: 120px; height: 120px; flex: none; z-index: 10; }
 
   /* Face */
-  .face { position: relative; width: 280px; height: 280px; transition: all 0.5s ease; }
+  .face { position: relative; width: 420px; height: 420px; transition: all 0.5s ease; }
   .corner .face { width: 100px; height: 100px; }
 
   /* Eyes */
@@ -371,13 +372,27 @@ FACE_HTML = r"""<!DOCTYPE html>
 
 # -- Router factory ----------------------------------------------------------
 
-def create_router(display: DisplayBroadcaster) -> APIRouter:
+def create_router(display: DisplayBroadcaster, key_store: KeyStore | None = None) -> APIRouter:
     """Create display router with REST, WebSocket, and HTML endpoints."""
 
     @router.get("/face", response_class=HTMLResponse, include_in_schema=False)
-    async def face_page():
+    async def face_page(request: Request):
         """Serve the robot face HTML page."""
-        return FACE_HTML
+        # Inject API key into WebSocket URL if provided via query param
+        api_key = request.query_params.get("api_key", "")
+        if api_key:
+            html = FACE_HTML.replace(
+                "'/ws/display'",
+                f"'/ws/display?api_key={api_key}'",
+            )
+            # Also handle the template literal form
+            html = html.replace(
+                "location.host + '/ws/display'",
+                f"location.host + '/ws/display?api_key={api_key}'",
+            )
+        else:
+            html = FACE_HTML
+        return html
 
     @router.post("/display/text")
     async def display_text(req: TextRequest):
@@ -413,6 +428,11 @@ def create_router(display: DisplayBroadcaster) -> APIRouter:
     @router.websocket("/ws/display")
     async def ws_display(ws: WebSocket):
         """WebSocket for live display updates to face GUI."""
+        if key_store is not None:
+            ok, _name, _role = check_ws_auth(ws, key_store)
+            if not ok:
+                await ws.close(code=4001, reason="Unauthorized")
+                return
         await display.connect(ws)
         try:
             while True:
