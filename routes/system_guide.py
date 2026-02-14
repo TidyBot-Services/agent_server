@@ -220,9 +220,9 @@ def generate_guide() -> dict:
                     {
                         "name": "Terminal output (preferred)",
                         "description": (
-                            "Poll `GET /code/status?offset=N` for incremental "
-                            "stdout/stderr. Use the returned line count as the "
-                            "next offset. This is cheap — text only, no images."
+                            "Poll `GET /code/status?stdout_offset=N&stderr_offset=N` "
+                            "for incremental output. Use the returned offsets as "
+                            "the next values. This is cheap — text only, no images."
                         ),
                     },
                     {
