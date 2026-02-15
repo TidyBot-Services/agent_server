@@ -12,8 +12,9 @@ import html as html_mod
 import logging
 import re
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
+from fastapi.routing import APIRoute, APIWebSocketRoute
 
 from config import LeaseConfig
 
@@ -51,7 +52,47 @@ def _friendly_unit(field_name: str, val: object) -> str:
     return formatted
 
 
-def generate_guide() -> dict:
+def _collect_endpoints(app, prefixes: list[str]) -> list[dict]:
+    """Collect endpoints from the app matching any of the given path prefixes.
+
+    Skips routes hidden from the schema (admin-only) and the guide itself.
+    """
+    endpoints = []
+    for route in app.routes:
+        if isinstance(route, APIWebSocketRoute):
+            path = route.path
+            if any(path.startswith(p) for p in prefixes):
+                summary = ""
+                if route.endpoint and route.endpoint.__doc__:
+                    summary = route.endpoint.__doc__.strip().split("\n")[0]
+                endpoints.append({
+                    "method": "WS",
+                    "path": path,
+                    "description": summary,
+                })
+            continue
+        if not isinstance(route, APIRoute):
+            continue
+        if not getattr(route, "include_in_schema", True):
+            continue
+        path = route.path
+        if path.startswith("/docs"):
+            continue  # skip the guide itself
+        if not any(path.startswith(p) for p in prefixes):
+            continue
+        method = next(iter(route.methods)) if route.methods else "GET"
+        summary = route.summary or ""
+        if not summary and route.endpoint and route.endpoint.__doc__:
+            summary = route.endpoint.__doc__.strip().split("\n")[0]
+        endpoints.append({
+            "method": method,
+            "path": path,
+            "description": summary,
+        })
+    return endpoints
+
+
+def generate_guide(app=None) -> dict:
     """Generate the system guide by introspecting live config."""
     lease_cfg = LeaseConfig()
     descriptions = _lease_field_descriptions()
@@ -263,52 +304,20 @@ def generate_guide() -> dict:
             "state_observation": {
                 "title": "State & Observation",
                 "description": "Read robot state and camera feeds. No lease required.",
-                "endpoints": [
-                    {
-                        "method": "GET",
-                        "path": "/state",
-                        "description": "Robot state (arm joints, base pose, gripper)",
-                    },
-                    {
-                        "method": "GET",
-                        "path": "/health",
-                        "description": "Backend connectivity status",
-                    },
-                    {
-                        "method": "GET",
-                        "path": "/cameras",
-                        "description": "List available cameras",
-                    },
-                    {
-                        "method": "GET",
-                        "path": "/cameras/{id}/frame",
-                        "description": "Get a camera frame (JPEG)",
-                    },
-                    {
-                        "method": "WS",
-                        "path": "/ws/state",
-                        "description": "Streaming robot state",
-                    },
-                    {
-                        "method": "WS",
-                        "path": "/ws/cameras",
-                        "description": "Streaming camera feeds",
-                    },
-                    {
-                        "method": "GET",
-                        "path": "/code/recordings",
-                        "description": "List execution IDs with recorded frames",
-                    },
-                    {
-                        "method": "GET",
-                        "path": "/code/recordings/{execution_id}",
-                        "description": "Recording metadata (timestamps, cameras, frame count)",
-                    },
-                    {
-                        "method": "GET",
-                        "path": "/code/recordings/{execution_id}/frames/{filename}",
-                        "description": "Retrieve a recorded JPEG frame",
-                    },
+                "endpoints": _collect_endpoints(app, [
+                    "/state", "/health", "/cameras",
+                    "/ws/state", "/ws/cameras",
+                    "/code/recordings",
+                ]) if app else [
+                    {"method": "GET", "path": "/state", "description": "Robot state (arm joints, base pose, gripper)"},
+                    {"method": "GET", "path": "/health", "description": "Backend connectivity status"},
+                    {"method": "GET", "path": "/cameras", "description": "List available cameras"},
+                    {"method": "GET", "path": "/cameras/{device_id}/frame", "description": "Get a camera frame (JPEG)"},
+                    {"method": "WS", "path": "/ws/state", "description": "Streaming robot state"},
+                    {"method": "WS", "path": "/ws/cameras", "description": "Streaming camera feeds"},
+                    {"method": "GET", "path": "/code/recordings", "description": "List execution IDs with recorded frames"},
+                    {"method": "GET", "path": "/code/recordings/{execution_id}", "description": "Recording metadata"},
+                    {"method": "GET", "path": "/code/recordings/{execution_id}/frames/{filename}", "description": "Retrieve a recorded JPEG frame"},
                 ],
             },
             "display": {
@@ -638,7 +647,7 @@ def _md_to_html(raw_md: str) -> str:
 
 
 @router.get("/guide")
-async def get_system_guide():
+async def get_system_guide(request: Request):
     """Get auto-generated system guide.
 
     Returns documentation for the lease system, code execution, and
@@ -646,18 +655,18 @@ async def get_system_guide():
 
     No lease required.
     """
-    return generate_guide()
+    return generate_guide(app=request.app)
 
 
 @router.get("/guide/html", response_class=HTMLResponse)
-async def get_system_guide_html():
+async def get_system_guide_html(request: Request):
     """Get system guide as rendered HTML.
 
     Opens nicely in a browser. Also usable by agents via curl.
 
     No lease required.
     """
-    guide = generate_guide()
+    guide = generate_guide(app=request.app)
     md = _render_markdown(guide)
     body = _md_to_html(md)
 
