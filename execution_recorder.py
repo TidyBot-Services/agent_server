@@ -102,6 +102,14 @@ class ExecutionRecorder:
         duration = stopped_at - self._started_at
         frame_count = self._frame_index
 
+        # Build frames list from files on disk
+        frames_list = []
+        if self._output_dir and self._output_dir.exists():
+            frames_list = sorted(
+                f.name for f in self._output_dir.iterdir()
+                if f.suffix == ".jpg"
+            )
+
         # Write metadata
         metadata = {
             "execution_id": self._execution_id,
@@ -115,6 +123,7 @@ class ExecutionRecorder:
                 for did, name in self._name_map.items()
             ],
             "timestamps": [round(t, 3) for t in self._timestamps],
+            "frames": frames_list,
         }
 
         if self._output_dir and frame_count > 0:
@@ -191,11 +200,21 @@ class ExecutionRecorder:
         if not meta_path.exists():
             return None
         try:
-            return json.loads(meta_path.read_text())
+            metadata = json.loads(meta_path.read_text())
         except Exception as e:
             logger.error("ExecutionRecorder: failed to read metadata for %s: %s",
                          execution_id, e)
             return None
+
+        # Backfill frames list for older recordings that lack it
+        if "frames" not in metadata:
+            rec_dir = _CODE_DIR / execution_id
+            metadata["frames"] = sorted(
+                f.name for f in rec_dir.iterdir()
+                if f.suffix == ".jpg"
+            )
+
+        return metadata
 
     def list_recordings(self) -> List[str]:
         """List execution IDs that have recordings (newest first)."""

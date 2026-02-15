@@ -149,6 +149,19 @@ def generate_guide(app=None) -> dict:
     return {
         "title": "TidyBot Getting Started Guide",
         "sections": {
+            "authentication": {
+                "title": "Authentication",
+                "description": (
+                    "Remote clients must authenticate with an API key. "
+                    "Localhost requests need no key."
+                ),
+                "how": [
+                    "Pass `X-API-Key: <your-key>` as a header on every request, "
+                    "or append `?api_key=<your-key>` as a query parameter.",
+                    "Get your API key from the robot operator or ROBOT.md.",
+                    "Requests from localhost (127.0.0.1) bypass authentication.",
+                ],
+            },
             "lease": {
                 "title": "Lease System",
                 "description": (
@@ -218,6 +231,17 @@ def generate_guide(app=None) -> dict:
                     "retrace its path in reverse before going home — use this when "
                     "the robot might be in a tight spot where a straight move would collide."
                 ),
+                "idle_tip": (
+                    "The idle timeout resets on every API call. If you need time "
+                    "between calls (e.g., processing results), call "
+                    "`POST /lease/extend` with `{\"lease_id\": \"...\"}` to reset "
+                    "the timer. Alternatively, batch your work into a single "
+                    "code execution to avoid gaps."
+                ),
+                "api_docs_note": (
+                    "For full request/response schemas for all endpoints, "
+                    "see the interactive API reference at [`/docs`](/docs)."
+                ),
             },
             "code_execution": {
                 "title": "Code Execution",
@@ -225,9 +249,21 @@ def generate_guide(app=None) -> dict:
                     "Control the robot by submitting Python code. The code runs "
                     "in a subprocess with full access to the robot SDK."
                 ),
+                "lease_header_note": (
+                    "Pass `X-Lease-Id: <your-lease-id>` as a header on "
+                    "`/code/execute` and `/code/stop`. The lease ID is returned "
+                    "when you acquire a lease."
+                ),
                 "submit": {
                     "method": "POST",
                     "path": "/code/execute",
+                    "example_curl": (
+                        'curl -X POST http://<ROBOT_IP>:8080/code/execute \\\n'
+                        '  -H "X-API-Key: <your-key>" \\\n'
+                        '  -H "X-Lease-Id: <your-lease-id>" \\\n'
+                        '  -H "Content-Type: application/json" \\\n'
+                        '  -d \'{"code": "from robot_sdk import arm\\narm.go_home()", "timeout": 60}\''
+                    ),
                     "body": '{"code": "from robot_sdk import arm\\narm.move_joints([0,0,0,0,0,0,0])", "timeout": 60}',
                 },
                 "validate": {
@@ -271,9 +307,13 @@ def generate_guide(app=None) -> dict:
                         "description": (
                             "Camera frames are automatically recorded at 0.5 Hz "
                             "during every code execution. After execution, retrieve "
-                            "them via `GET /code/recordings/{execution_id}` (metadata) "
+                            "them via `GET /code/recordings/{execution_id}` (metadata "
+                            "including a `frames` list of all filenames) "
                             "and `GET /code/recordings/{execution_id}/frames/{filename}` "
-                            "(JPEG). This avoids vision token cost from live polling."
+                            "(JPEG). Filenames follow the pattern "
+                            "`{NNNN}_{camera_name}.jpg` (zero-padded 4-digit index "
+                            "+ camera name, e.g. `0000_wrist_cam.jpg`, `0001_base_front.jpg`). "
+                            "This avoids vision token cost from live polling."
                         ),
                     },
                     {
@@ -372,6 +412,15 @@ def _render_markdown(guide: dict) -> str:
     """Render the guide dict as markdown."""
     md = f"# {guide['title']}\n\n"
 
+    # Authentication section
+    if "authentication" in guide["sections"]:
+        auth = guide["sections"]["authentication"]
+        md += f"## {auth['title']}\n\n"
+        md += f"{auth['description']}\n\n"
+        for item in auth["how"]:
+            md += f"- {item}\n"
+        md += "\n"
+
     # Lease section
     lease = guide["sections"]["lease"]
     md += f"## {lease['title']}\n\n"
@@ -392,6 +441,10 @@ def _render_markdown(guide: dict) -> str:
     if "queue_note" in lease:
         md += f"> {lease['queue_note']}\n\n"
     md += f"> {lease['auto_rewind_note']}\n\n"
+    if "idle_tip" in lease:
+        md += f"> {lease['idle_tip']}\n\n"
+    if "api_docs_note" in lease:
+        md += f"> {lease['api_docs_note']}\n\n"
 
     md += "### Endpoints\n\n"
     md += "| Method | Path | Description |\n"
@@ -408,8 +461,15 @@ def _render_markdown(guide: dict) -> str:
     md += f"## {code['title']}\n\n"
     md += f"{code['description']}\n\n"
 
+    if "lease_header_note" in code:
+        md += f"> {code['lease_header_note']}\n\n"
+
     md += "### Submit Code\n\n"
     md += f"**`{code['submit']['method']} {code['submit']['path']}`**\n\n"
+    if "example_curl" in code["submit"]:
+        md += "```bash\n"
+        md += code["submit"]["example_curl"]
+        md += "\n```\n\n"
     md += "```json\n"
     md += code["submit"]["body"].replace("\\n", "\n")
     md += "\n```\n\n"
