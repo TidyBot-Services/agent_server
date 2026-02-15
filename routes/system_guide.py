@@ -170,10 +170,10 @@ def generate_guide(app=None) -> dict:
                 ),
                 "config": lease_fields,
                 "flow": [
-                    "POST /lease/acquire — if free you get a lease immediately; if busy you get a ticket_id",
+                    'POST /lease/acquire with body {"holder": "your-name"} — if free you get a lease_id immediately; if busy you get a ticket_id',
                     "If queued, poll GET /lease/queue/{ticket_id} until status is 'granted'",
-                    "Submit code or commands using the lease",
-                    "Release with POST /lease/release (or let it expire)",
+                    "Pass your lease_id in the X-Lease-Id header for code execution and command requests",
+                    'Release with POST /lease/release {"lease_id": "..."} (or let it expire)',
                     "Robot automatically returns to home position",
                     "Next agent in queue gets the lease",
                 ],
