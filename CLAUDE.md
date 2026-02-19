@@ -1,13 +1,13 @@
 # Tidybot Agent Server
 
-FastAPI hardware server that AI agents use to control the robot. Unified API for arm + base + gripper commands, cameras.
+FastAPI hardware server that AI agents use to control the robot. Unified API for arm + base + gripper commands, cameras, mocap.
 
 ```
 Agent ──► tidybot-agent-server ──► base_server.py   (mobile base)
            (FastAPI :8080)      ──► FrankaServer     (arm, ZMQ 1 kHz)
                                 ──► gripper_server   (Robotiq gripper, ZMQ)
                                 ──► camera_server    (RealSense cameras, WebSocket)
-                                ──► qp_arm_only.py   (whole-body controller, deprecated)
+                                ──► mocap_server     (OptiTrack motion capture)
 ```
 
 ## CLI Options
@@ -21,6 +21,8 @@ Options:
   --dry-run                Use simulated backends (no hardware)
   --auto-start-services    Auto-start backend services on startup (experimental)
   --no-service-manager     Disable service management entirely (recommended with start_robot.sh)
+  --no-reset-on-release    Disable auto-home when lease ends
+  --no-dashboard           Disable the web dashboard GUI entirely
 ```
 
 ## API Key Authentication
@@ -62,7 +64,7 @@ Submit Python code that runs in a subprocess with access to a rich SDK.
 1. Agent observes sensors/cameras via WebSocket (no lease needed)
 2. Agent acquires lease
 3. Agent submits Python code via `POST /code/execute`
-4. Code runs in subprocess with access to `robot_sdk` (arm, base, gripper, sensors)
+4. Code runs in subprocess with access to `robot_sdk` (arm, base, gripper, sensors, yolo, display)
 5. Agent can stop execution via `POST /code/stop`
 
 **Endpoints:**
@@ -70,11 +72,15 @@ Submit Python code that runs in a subprocess with access to a rich SDK.
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `POST /code/execute` | POST | Submit Python code (requires lease) |
+| `POST /code/validate` | POST | Validate code without executing (checks for dangerous patterns, no lease) |
 | `POST /code/stop` | POST | Stop running code (requires lease) |
 | `GET /code/status` | GET | Live status with real-time stdout/stderr, incremental output via `?stdout_offset=N&stderr_offset=N`, and `error`/`stop_reason` when execution ends (no lease) |
 | `GET /code/result` | GET | Final result after execution completes (no lease) |
+| `GET /code/history` | GET | Last N execution results (`?count=3`) |
 | `GET /code/sdk` | GET | **Auto-generated SDK documentation (JSON)** |
 | `GET /code/sdk/markdown` | GET | SDK documentation as markdown |
+| `GET /code/recordings` | GET | List all execution IDs with recordings |
+| `GET /code/recordings/{id}` | GET | Get recording for specific execution |
 
 **Request format (`POST /code/execute`):**
 ```json
@@ -177,7 +183,7 @@ Code submitted via `/code/execute` has access to these modules. For always-up-to
 curl http://localhost:8080/code/sdk/markdown
 ```
 
-**Modules:** `arm`, `base`, `gripper`, `sensors`, `rewind`
+**Modules:** `arm`, `base`, `gripper`, `sensors`, `rewind`, `yolo`, `display`
 
 **Key Points:**
 - All SDK methods are **synchronous** (blocking) and **raise exceptions** on failure
@@ -187,6 +193,8 @@ curl http://localhost:8080/code/sdk/markdown
 - Velocity commands (`arm.send_joint_velocity()`, `arm.send_cartesian_velocity()`, `base.send_velocity()`) run for a specified duration then stop
 - Unavailable backends print a warning but don't crash
 - Rewind coordinates arm and base together through recorded waypoints
+- `yolo` provides object detection via backend YOLO service
+- `display` controls the robot face display (text, expressions, images)
 
 ### Lease System
 
@@ -211,9 +219,29 @@ curl -X POST localhost:8080/code/execute \
 | `GET /health` | Server health and backend status |
 | `GET /trajectory` | Recorded trajectory waypoints |
 | `GET /cameras` | List connected cameras |
-| `GET /cameras/{device_id}/frame` | Frame from specific camera |
+| `GET /cameras/{device_id}/frame` | Frame from specific camera (`?stream=color\|depth\|infrared_left\|infrared_right`) |
+| `GET /cameras/{device_id}/intrinsics` | Camera intrinsics (fx, fy, ppx, ppy) |
+| `GET /docs/guide` | Auto-generated system guide (JSON) |
+| `GET /docs/guide/html` | System guide as HTML page |
 | `WS /ws/state` | WebSocket state stream |
 | `WS /ws/cameras` | WebSocket camera streaming |
+
+### Display Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /display/text` | Show text on robot face display |
+| `POST /display/face` | Change face expression |
+| `POST /display/image` | Show image on face display |
+| `POST /display/clear` | Clear display content |
+| `WS /ws/display` | WebSocket for live display updates |
+| `GET /face` | Robot face HTML page (hidden) |
+
+### YOLO Endpoint
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /yolo/visualization` | Latest YOLO segmentation visualization as JPEG (hidden) |
 
 ### Lease Endpoints
 
@@ -228,8 +256,6 @@ curl -X POST localhost:8080/code/execute \
 | `POST /lease/pause-queue` | Pause queue processing (admin, hidden from `/docs`) |
 | `POST /lease/resume-queue` | Resume queue processing (admin, hidden from `/docs`) |
 | `POST /lease/clear-queue` | Clear all queued lease requests (admin, hidden from `/docs`) |
-
-> **TODO:** When a maintenance agent is added, gate these admin endpoints behind an `X-Admin-Key` header instead of just hiding them from the schema.
 
 For frontend-facing documentation, see `GET /docs/guide/html`.
 
@@ -253,7 +279,8 @@ Handles backend processes with:
 | `franka_server` | Franka Arm Server | `unlock` |
 | `gripper_server` | Gripper Server | None |
 | `camera_server` | Camera Server | None |
-| `controller` | Whole-Body Controller (deprecated) | `base_server`, `franka_server` |
+| `mocap_server` | Mocap Server | None |
+| `controller` | Whole-Body Controller (broken — `qp_arm_only.py` missing) | `base_server`, `franka_server` |
 
 ### REST API
 
@@ -298,7 +325,8 @@ curl localhost:8080/health
     "base": true,
     "franka": false,
     "gripper": true,
-    "cameras": false
+    "cameras": false,
+    "mocap": false
   }
 }
 ```
@@ -318,7 +346,10 @@ Full trajectory reversal API for error recovery. See root CLAUDE.md for overview
 | `/rewind/to-safe` | POST | Rewind to last safe waypoint (requires lease) |
 | `/rewind/to-waypoint` | POST | Rewind to specific waypoint index (requires lease) |
 | `/rewind/reset-to-home` | POST | Full 100% rewind (requires lease) |
+| `/rewind/manual` | POST | Rewind using configured manual percentage (requires lease) |
+| `/rewind/trajectory` | GET | Trajectory info with safe waypoint index |
 | `/rewind/trajectory/clear` | POST | Clear all trajectory waypoints |
+| `/rewind/monitor/status` | GET | Safety monitor status |
 | `/rewind/monitor/enable` | POST | Enable auto-rewind on boundary violation |
 | `/rewind/monitor/disable` | POST | Disable auto-rewind |
 
@@ -342,7 +373,12 @@ curl -X PUT localhost:8080/rewind/config \
 {
   "timestamp": 1770176344.82,
   "base": {
-    "pose": [0.0, 0.0, 0.0]
+    "pose": [0.0, 0.0, 0.0],
+    "velocity": [0.0, 0.0, 0.0],
+    "pose_source": "odom",
+    "odom_pose": [0.0, 0.0, 0.0],
+    "mocap_pose": null,
+    "mocap_tracking": false
   },
   "arm": {
     "q": [0.28, -0.38, 0.18, -1.91, 0.29, 1.92, -0.21],
@@ -351,7 +387,10 @@ curl -X PUT localhost:8080/rewind/config \
     "ee_pose_world": ["...16 values"],
     "ee_wrench": ["fx, fy, fz, tx, ty, tz"],
     "mode": 0,
-    "robot_mode": 1
+    "robot_mode": 1,
+    "auto_hold_active": false,
+    "q_target": [0.0, -0.785, 0.0, -2.356, 0.0, 1.913, 0.785],
+    "pose_target": ["...16 values"]
   },
   "gripper": {
     "position": 0,
@@ -364,11 +403,13 @@ curl -X PUT localhost:8080/rewind/config \
     "fault_code": 0,
     "fault_message": ""
   },
-  "motors_moving": false
+  "last_moved_at": 1770176340.0
 }
 ```
 
 **EE position from ee_pose (column-major):** X=`ee_pose[12]`, Y=`ee_pose[13]`, Z=`ee_pose[14]`
+
+**Base pose source:** When mocap is tracking, `pose` uses mocap data and `pose_source` is `"mocap"`. Otherwise falls back to odometry (`"odom"`).
 
 ## Files Reference
 
@@ -377,22 +418,31 @@ curl -X PUT localhost:8080/rewind/config \
 | `server.py` | Main FastAPI application |
 | `config.py` | Configuration dataclasses, service definitions |
 | `services.py` | ServiceManager class |
-| `state.py` | StateAggregator (polls backends) |
+| `state.py` | StateAggregator (polls backends, builds unified state) |
 | `safety.py` | SafetyEnvelope (command validation) |
+| `safety_monitor.py` | Safety monitor for collision detection + boundary violations |
 | `lease.py` | LeaseManager |
+| `auth.py` | API key auth (KeyStore, middleware) |
+| `arm_monitor.py` | Arm crash recovery monitor |
+| `display_state.py` | DisplayBroadcaster for face display |
+| `code_executor.py` | Subprocess code execution engine |
 | `backends/base.py` | Base server client |
 | `backends/franka.py` | Franka server client |
 | `backends/gripper.py` | Gripper server client |
 | `backends/cameras.py` | Camera backend |
+| `backends/mocap.py` | Mocap backend (port 5590) |
 | `routes/code_routes.py` | Code execution endpoints |
-| `routes/state_routes.py` | State/health endpoints |
+| `routes/state_routes.py` | State/health/camera endpoints |
 | `routes/lease_routes.py` | Lease endpoints |
 | `routes/service_routes.py` | Service management + dashboard |
 | `routes/rewind_routes.py` | Rewind/trajectory reversal endpoints |
+| `routes/display_routes.py` | Display/face endpoints |
+| `routes/yolo_routes.py` | YOLO visualization endpoint |
 | `routes/ws.py` | WebSocket handlers |
-| `code_executor.py` | Subprocess code execution engine |
-| `robot_sdk/` | SDK modules (arm, base, gripper, sensors, rewind) |
 | `routes/sdk_docs.py` | Auto-generated SDK documentation |
+| `routes/system_guide.py` | Auto-generated system guide |
+| `robot_sdk/` | SDK modules (arm, base, gripper, sensors, rewind, yolo, display) |
+| `service_clients/` | Downloaded client SDKs for backend ML services |
 | `controllers/` | Python controllers for arm and base |
 | `examples/` | Example scripts (pick_and_place.py, simple_move.py) |
 | `tests/` | All test scripts |
