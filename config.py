@@ -59,14 +59,6 @@ def default_services() -> dict[str, ServiceDefinition]:
             kill_patterns=["start_server.sh", "franka_server.server"],
             depends_on=["unlock"],
         ),
-        "controller": ServiceDefinition(
-            name="Whole-Body Controller",
-            cmd="python3 -u qp_arm_only.py",
-            cwd=os.path.join(_PROJECT_ROOT, "tidybot2"),
-            shell_prefix=f"source {os.path.join(_PROJECT_ROOT, 'franka_interact', '.venv', 'bin', 'activate')} && ",
-            kill_patterns=["qp_arm_only.py"],
-            depends_on=["base_server", "franka_server"],
-        ),
         "gripper_server": ServiceDefinition(
             name="Gripper Server",
             cmd="python3 -m gripper_server.server",
@@ -180,7 +172,7 @@ class CameraBackendConfig:
     port: int = 5580                    # camera_server WebSocket port
     timeout: float = 10.0               # connection timeout
     auto_subscribe: bool = True         # subscribe to streams on connect
-    streams: list[str] = field(default_factory=lambda: ["color", "depth"])
+    streams: list[str] = field(default_factory=lambda: ["color", "depth", "infrared_left", "infrared_right"])
     stream_fps: int = 15                # streaming FPS
     quality: int = 80                   # JPEG quality for color frames
 

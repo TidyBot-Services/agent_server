@@ -280,7 +280,6 @@ Handles backend processes with:
 | `gripper_server` | Gripper Server | None |
 | `camera_server` | Camera Server | None |
 | `mocap_server` | Mocap Server | None |
-| `controller` | Whole-Body Controller (broken — `qp_arm_only.py` missing) | `base_server`, `franka_server` |
 
 ### REST API
 
