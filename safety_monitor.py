@@ -40,9 +40,18 @@ class SafetyMonitor:
         # Collision detection state
         self._collision_start: float | None = None  # when divergence started
         self._collision_detected: bool = False
+        self._collision_armed: bool = False  # True after base reaches cruising speed
         self._last_trigger_time: float = 0.0
         self._auto_rewind_count: int = 0
         self._last_auto_rewind_time: float | None = None
+
+        # Rewind-time stuck detection
+        self._rewind_last_pos: list | None = None  # [x, y] during rewind
+        self._rewind_stuck_since: float | None = None
+
+        # Manual reset state — set when collision during rewind
+        self._manual_reset_required: bool = False
+        self._manual_reset_reason: str = ""
 
     # -- public status -------------------------------------------------------
 
@@ -58,6 +67,18 @@ class SafetyMonitor:
     def last_auto_rewind_time(self) -> float | None:
         return self._last_auto_rewind_time
 
+    @property
+    def manual_reset_required(self) -> bool:
+        return self._manual_reset_required
+
+    def reset_manual(self) -> None:
+        """Clear manual-reset-required state (admin action)."""
+        self._manual_reset_required = False
+        self._manual_reset_reason = ""
+        self._rewind_last_pos = None
+        self._rewind_stuck_since = None
+        logger.info("SafetyMonitor: manual reset cleared by admin")
+
     def get_status(self) -> dict:
         cfg = self._orchestrator.config
         return {
@@ -69,9 +90,12 @@ class SafetyMonitor:
             "last_auto_rewind_time": self._last_auto_rewind_time,
             "is_currently_rewinding": self._orchestrator.is_rewinding,
             "collision_detected": self._collision_detected,
-            "collision_velocity_threshold": cfg.collision_velocity_threshold,
+            "collision_arm_threshold": cfg.collision_arm_threshold,
+            "collision_trigger_threshold": cfg.collision_trigger_threshold,
             "collision_min_cmd_speed": cfg.collision_min_cmd_speed,
             "collision_grace_period": cfg.collision_grace_period,
+            "manual_reset_required": self._manual_reset_required,
+            "manual_reset_reason": self._manual_reset_reason,
         }
 
     # -- lifecycle -----------------------------------------------------------
@@ -99,7 +123,12 @@ class SafetyMonitor:
                 cfg = self._orchestrator.config
                 interval = cfg.monitor_interval
 
-                if cfg.auto_rewind_enabled and not self._orchestrator.is_rewinding:
+                # Locked out — wait for admin reset
+                if self._manual_reset_required:
+                    await asyncio.sleep(interval)
+                    continue
+
+                if cfg.auto_rewind_enabled:
                     # Auto-disable if mocap drops out
                     agg = self._state_agg.state
                     base_info = agg.get("base", {})
@@ -113,8 +142,12 @@ class SafetyMonitor:
                         continue
 
                     now = time.time()
-                    # Respect cooldown
-                    if now - self._last_trigger_time >= self.COOLDOWN_SECONDS:
+
+                    if self._orchestrator.is_rewinding:
+                        # During rewind: check if base is stuck (position-based)
+                        if self._check_rewind_stuck(now, base_info):
+                            await self._trigger_manual_reset("collision during rewind")
+                    elif now - self._last_trigger_time >= self.COOLDOWN_SECONDS:
                         triggered = False
                         reason = ""
 
@@ -149,30 +182,45 @@ class SafetyMonitor:
     def _check_collision(self, now: float) -> bool:
         """Check if base is colliding by comparing commanded vs actual velocity.
 
+        Uses server-side command state (shared across all RPC clients, including
+        the code execution subprocess) instead of the main process's local state.
+
+        Only triggers after the base has reached cruising speed (ratio exceeds
+        threshold at least once), so acceleration ramp-up doesn't false-trigger.
+
         Returns True if collision should trigger rewind.
         """
         cfg = self._orchestrator.config
 
+        # Get command state from the shared base_server singleton
+        try:
+            cmd_state = self._base.get_command_state()
+        except Exception:
+            return False
+
         # Only check during active velocity commands
-        if not self._base.is_velocity_mode:
+        if not cmd_state.get("is_velocity_mode", False):
             self._collision_start = None
             self._collision_detected = False
+            self._collision_armed = False
             return False
 
         # Command must be recent (< 1 second old)
-        cmd_age = now - self._base.last_cmd_time
-        if cmd_age > 1.0:
+        cmd_time = cmd_state.get("cmd_time", 0.0)
+        if now - cmd_time > 1.0:
             self._collision_start = None
             self._collision_detected = False
+            self._collision_armed = False
             return False
 
-        cmd_vel = self._base.last_cmd_vel
+        cmd_vel = cmd_state.get("cmd_vel", [0.0, 0.0, 0.0])
         cmd_speed = math.hypot(cmd_vel[0], cmd_vel[1])
 
         # Skip if commanded speed is too low
         if cmd_speed < cfg.collision_min_cmd_speed:
             self._collision_start = None
             self._collision_detected = False
+            self._collision_armed = False
             return False
 
         # Get actual velocity from state
@@ -182,24 +230,96 @@ class SafetyMonitor:
 
         ratio = actual_speed / cmd_speed
 
-        if ratio < cfg.collision_velocity_threshold:
-            # Velocity divergence detected
+        if ratio >= cfg.collision_arm_threshold:
+            # Base is at speed — arm the detector and reset divergence timer
+            self._collision_armed = True
+            self._collision_start = None
+            self._collision_detected = False
+        elif self._collision_armed and ratio < cfg.collision_trigger_threshold:
+            # Armed and ratio dropped well below normal — possible collision
             if self._collision_start is None:
                 self._collision_start = now
             elif now - self._collision_start >= cfg.collision_grace_period:
                 self._collision_detected = True
                 return True
-        else:
-            # Velocities match — reset
+        elif self._collision_armed:
+            # Ratio between trigger and arm thresholds — normal oscillation, reset timer
             self._collision_start = None
-            self._collision_detected = False
 
         return False
+
+    # -- rewind-time stuck detection -----------------------------------------
+
+    REWIND_STUCK_THRESHOLD = 0.01  # meters — less than this movement = stuck
+    REWIND_STUCK_GRACE = 1.0  # seconds stuck before triggering
+
+    def _check_rewind_stuck(self, now: float, base_info: dict) -> bool:
+        """Check if the base is stuck during a rewind (position not advancing).
+
+        Returns True if stuck long enough to trigger manual reset.
+        """
+        pose = base_info.get("pose", [0, 0, 0])
+        pos = [pose[0], pose[1]]
+
+        if self._rewind_last_pos is None:
+            self._rewind_last_pos = pos
+            self._rewind_stuck_since = None
+            return False
+
+        dx = pos[0] - self._rewind_last_pos[0]
+        dy = pos[1] - self._rewind_last_pos[1]
+        dist = math.hypot(dx, dy)
+
+        if dist > self.REWIND_STUCK_THRESHOLD:
+            # Moving — reset
+            self._rewind_last_pos = pos
+            self._rewind_stuck_since = None
+        else:
+            # Not moving
+            if self._rewind_stuck_since is None:
+                self._rewind_stuck_since = now
+            elif now - self._rewind_stuck_since >= self.REWIND_STUCK_GRACE:
+                return True
+
+        return False
+
+    async def _trigger_manual_reset(self, reason: str) -> None:
+        """Enter manual-reset-required state. Stops everything, requires admin reset."""
+        self._manual_reset_required = True
+        self._manual_reset_reason = reason
+
+        logger.error("SafetyMonitor: %s — entering MANUAL RESET REQUIRED state", reason)
+
+        # Voice announcement
+        if self._display is not None:
+            self._display.announce("Collision during rewind. Manual reset required.")
+
+        # Stop code execution
+        await self._stop_code_execution(reason)
+
+        # Stop the base
+        try:
+            self._base.stop()
+        except Exception as e:
+            logger.error("SafetyMonitor: failed to stop base: %s", e)
+
+        # Cancel the rewind
+        try:
+            self._orchestrator.cancel_rewind()
+        except Exception as e:
+            logger.error("SafetyMonitor: failed to cancel rewind: %s", e)
+
+        # Reset detection state
+        self._rewind_last_pos = None
+        self._rewind_stuck_since = None
+        self._collision_start = None
+        self._collision_detected = False
+        self._collision_armed = False
 
     # -- rewind trigger ------------------------------------------------------
 
     async def _trigger_rewind(self, reason: str) -> None:
-        """Stop the base and rewind to last safe waypoint."""
+        """Stop code execution, stop the base, and rewind to last safe waypoint."""
         self._last_trigger_time = time.time()
 
         logger.warning("SafetyMonitor: %s — stopping base and rewinding to safe waypoint", reason)
@@ -211,6 +331,9 @@ class SafetyMonitor:
                 "boundary violation": "Boundary violation, rewinding",
             }
             self._display.announce(announce_map.get(reason, f"{reason}, rewinding"))
+
+        # Stop any running code execution so the subprocess knows what happened
+        await self._stop_code_execution(reason)
 
         # Stop the base immediately
         try:
@@ -230,6 +353,23 @@ class SafetyMonitor:
         except Exception as e:
             logger.error("SafetyMonitor: rewind error: %s", e)
 
-        # Reset collision state after rewind
+        # Reset state after rewind
         self._collision_start = None
         self._collision_detected = False
+        self._collision_armed = False
+        self._rewind_last_pos = None
+        self._rewind_stuck_since = None
+
+    # -- code execution stop -------------------------------------------------
+
+    async def _stop_code_execution(self, reason: str) -> None:
+        """Stop any running code execution with a safety-specific reason."""
+        try:
+            from routes.code_routes import get_executor
+            executor = get_executor()
+            if executor.is_running:
+                stop_reason = f"safety_{reason.replace(' ', '_')}"
+                logger.info("SafetyMonitor: stopping running code execution (reason: %s)", stop_reason)
+                executor.stop(reason=stop_reason)
+        except Exception as e:
+            logger.warning("SafetyMonitor: failed to stop code execution: %s", e)

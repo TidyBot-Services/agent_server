@@ -259,11 +259,15 @@ class BaseAPI:
         Streams the velocity command at 10 Hz for the given duration,
         then stops the base.
 
+        When mocap is tracking and frame is "global", velocities are
+        interpreted in the mocap world frame and automatically rotated
+        into the odom frame each iteration (correcting for heading drift).
+
         Args:
             vx: Linear velocity in x (m/s)
             vy: Linear velocity in y (m/s)
             wz: Angular velocity around z (rad/s)
-            frame: "global" (default) or "local" (robot frame)
+            frame: "global" (default, mocap-corrected) or "local" (robot frame)
             duration: How long to send the velocity in seconds (default: 1.0)
 
         Raises:
@@ -276,7 +280,23 @@ class BaseAPI:
         try:
             start_time = time.time()
             while time.time() - start_time < duration:
-                self._backend.set_target_velocity(vx, vy, wz, frame)
+                cmd_vx, cmd_vy = vx, vy
+
+                if frame == "global":
+                    # Rotate from mocap world frame to odom frame
+                    mocap = self._get_mocap_pose()
+                    if mocap is not None:
+                        try:
+                            odom = self._backend.get_state().get("base_pose", [0, 0, 0])
+                            alpha = odom[2] - mocap[2]
+                            cos_a = math.cos(alpha)
+                            sin_a = math.sin(alpha)
+                            cmd_vx = cos_a * vx - sin_a * vy
+                            cmd_vy = sin_a * vx + cos_a * vy
+                        except BaseBackendError:
+                            pass  # fall through with uncorrected velocity
+
+                self._backend.set_target_velocity(cmd_vx, cmd_vy, wz, frame)
                 time.sleep(0.1)  # 10 Hz
         except BaseBackendError as e:
             raise BaseError(f"Failed to send velocity command: {e}") from e

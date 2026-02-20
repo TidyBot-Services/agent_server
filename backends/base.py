@@ -92,7 +92,7 @@ class BaseBackend:
         if self._base is None:
             raise BaseBackendError("Base backend not connected")
         try:
-            raw = self._base.get_state()
+            raw = self._base.get_full_state()
         except (BrokenPipeError, EOFError, ConnectionResetError, OSError) as e:
             self._base = None  # Mark as disconnected
             raise BaseBackendError(f"Connection to base_server lost: {e}") from e
@@ -103,6 +103,19 @@ class BaseBackend:
         if isinstance(velocity, np.ndarray):
             velocity = velocity.tolist()
         return {"base_pose": pose, "base_velocity": velocity}
+
+    def get_command_state(self) -> dict:
+        """Get command state from the shared base server singleton.
+
+        This reflects ALL commands from ALL clients (main process + subprocesses),
+        unlike the local tracking fields which only see this process's commands.
+
+        Returns:
+            Dict with 'is_velocity_mode', 'cmd_vel', 'cmd_time'.
+        """
+        if self._dry_run:
+            return {"is_velocity_mode": False, "cmd_vel": [0.0, 0.0, 0.0], "cmd_time": 0.0}
+        return self._call_base("get_command_state")
 
     def get_battery_voltage(self) -> float:
         """Return battery supply voltage in volts.

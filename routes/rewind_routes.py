@@ -45,7 +45,8 @@ class MonitorConfigUpdate(BaseModel):
     auto_rewind_percentage: Optional[float] = None
     manual_rewind_percentage: Optional[float] = None
     monitor_interval: Optional[float] = None
-    collision_velocity_threshold: Optional[float] = Field(None, ge=0, le=1)
+    collision_arm_threshold: Optional[float] = Field(None, ge=0, le=1)
+    collision_trigger_threshold: Optional[float] = Field(None, ge=0, le=1)
     collision_min_cmd_speed: Optional[float] = Field(None, ge=0)
     collision_grace_period: Optional[float] = Field(None, ge=0)
 
@@ -289,14 +290,18 @@ def create_router(rewind_orchestrator, lease_mgr, system_logger, safety_monitor=
             "last_auto_rewind_time": None,
             "is_currently_rewinding": rewind_orchestrator.is_rewinding,
             "collision_detected": False,
-            "collision_velocity_threshold": cfg.collision_velocity_threshold,
+            "collision_arm_threshold": cfg.collision_arm_threshold,
+            "collision_trigger_threshold": cfg.collision_trigger_threshold,
             "collision_min_cmd_speed": cfg.collision_min_cmd_speed,
             "collision_grace_period": cfg.collision_grace_period,
+            "manual_reset_required": False,
+            "manual_reset_reason": "",
         }
         if safety_monitor is not None:
             result["auto_rewind_count"] = safety_monitor.auto_rewind_count
             result["last_auto_rewind_time"] = safety_monitor.last_auto_rewind_time
             result["collision_detected"] = safety_monitor.collision_detected
+            result["manual_reset_required"] = safety_monitor.manual_reset_required
         if arm_monitor is not None:
             result["arm_monitor"] = arm_monitor.get_status()
         return result
@@ -321,8 +326,10 @@ def create_router(rewind_orchestrator, lease_mgr, system_logger, safety_monitor=
             _manual_rewind_pct["value"] = req.manual_rewind_percentage
         if req.monitor_interval is not None:
             cfg.monitor_interval = req.monitor_interval
-        if req.collision_velocity_threshold is not None:
-            cfg.collision_velocity_threshold = req.collision_velocity_threshold
+        if req.collision_arm_threshold is not None:
+            cfg.collision_arm_threshold = req.collision_arm_threshold
+        if req.collision_trigger_threshold is not None:
+            cfg.collision_trigger_threshold = req.collision_trigger_threshold
         if req.collision_min_cmd_speed is not None:
             cfg.collision_min_cmd_speed = req.collision_min_cmd_speed
         if req.collision_grace_period is not None:
@@ -350,6 +357,15 @@ def create_router(rewind_orchestrator, lease_mgr, system_logger, safety_monitor=
         """Disable auto-rewind."""
         rewind_orchestrator.config.auto_rewind_enabled = False
         return {"auto_rewind_enabled": False}
+
+    @router.post("/monitor/reset", include_in_schema=False,
+                 dependencies=[Depends(require_admin)])
+    async def reset_safety_monitor():
+        """Clear manual-reset-required state (admin only)."""
+        if safety_monitor is None:
+            raise HTTPException(status_code=503, detail="Safety monitor not available")
+        safety_monitor.reset_manual()
+        return {"manual_reset_required": False}
 
     @router.post("/manual")
     async def trigger_manual_rewind(

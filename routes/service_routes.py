@@ -204,10 +204,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       </button>
     </div>
     <div class="control-card">
-      <h3>Reset to Home</h3>
+      <h3>Return to Home</h3>
       <div class="control-row">
-        <span class="control-label">Rewinds 100%</span>
-        <span class="state-value">of trajectory</span>
+        <span class="control-label">Rewinds trajectory</span>
+        <span class="state-value">then converges to origin</span>
       </div>
       <div class="control-row">
         <span class="control-label">Current Status</span>
@@ -238,6 +238,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <div class="control-row">
       <span class="control-label">Collision Status</span>
       <span id="collision-status" class="boundary-status safe">None</span>
+    </div>
+    <div id="manual-reset-banner" style="display:none; background:#b71c1c; color:#fff; padding:10px; border-radius:6px; margin:8px 0; text-align:center;">
+      <div style="font-weight:bold; font-size:14px;">MANUAL RESET REQUIRED</div>
+      <div id="manual-reset-reason" style="font-size:12px; margin:4px 0;"></div>
+      <button class="btn-action" style="background:#d32f2f; margin-top:6px;" onclick="resetSafetyMonitor(this)">Reset Safety Monitor</button>
     </div>
     <div class="control-row">
       <span class="control-label">Base Velocity</span>
@@ -587,6 +592,19 @@ async function toggleAutoRewind(enabled) {
   }
 }
 
+async function resetSafetyMonitor(btn) {
+  btn.disabled = true;
+  btn.textContent = "Resetting...";
+  try {
+    await fetch("/rewind/monitor/reset", { method: "POST" });
+    await pollRewind();
+  } catch (e) {
+    console.error("Failed to reset safety monitor:", e);
+  }
+  btn.disabled = false;
+  btn.textContent = "Reset Safety Monitor";
+}
+
 async function updateManualRewindPct(pct) {
   try {
     await fetch("/rewind/monitor/config", {
@@ -870,12 +888,24 @@ async function pollRewind() {
 
     // Update badge
     const badge = document.getElementById("auto-rewind-badge");
-    if (monitor.auto_rewind_enabled) {
+    if (monitor.manual_reset_required) {
+      badge.textContent = "LOCKED";
+      badge.className = "status-badge active";
+    } else if (monitor.auto_rewind_enabled) {
       badge.textContent = "Enabled";
       badge.className = "status-badge enabled";
     } else {
       badge.textContent = "Disabled";
       badge.className = "status-badge disabled";
+    }
+
+    // Manual reset banner
+    const resetBanner = document.getElementById("manual-reset-banner");
+    if (monitor.manual_reset_required) {
+      resetBanner.style.display = "block";
+      document.getElementById("manual-reset-reason").textContent = monitor.manual_reset_reason || "";
+    } else {
+      resetBanner.style.display = "none";
     }
 
     // Update manual percentage input (only if not focused)
