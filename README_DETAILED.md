@@ -209,6 +209,10 @@ objects = yolo.detect_and_describe()               # Detect + text descriptions
 | `/code/result` | GET | No | Last execution result |
 | `/code/sdk` | GET | No | SDK docs (JSON) |
 | `/code/sdk/markdown` | GET | No | SDK docs (Markdown) |
+| `/code/recordings` | GET | No | List execution IDs with recordings |
+| `/code/recordings/{id}` | GET | No | Recording metadata (frames + state log) |
+| `/code/recordings/{id}/frames/{filename}` | GET | No | Recorded JPEG frame |
+| `/code/recordings/{id}/state_log` | GET | No | State log as JSONL (10 Hz) |
 
 **Request** (`POST /code/execute`):
 ```json

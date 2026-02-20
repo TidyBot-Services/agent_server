@@ -99,10 +99,33 @@ REST API for code submission and status.
   - When execution ends, includes `error` (human-readable message) and `stop_reason` (e.g. `idle_timeout`, `max_duration`, `manual`)
 - `GET /code/result` — Get last result (no lease)
   - Returns: `{"result": {"status": "completed", "stdout": "...", "stderr": "...", ...}}`
+- `GET /code/recordings` — List execution IDs with recordings (no lease)
+- `GET /code/recordings/{id}` — Recording metadata including frames and state log (no lease)
+- `GET /code/recordings/{id}/frames/{filename}` — Serve a recorded JPEG frame (no lease)
+- `GET /code/recordings/{id}/state_log` — State log as JSONL (no lease)
 
-### 4. Server Integration (`server.py`)
+### 4. Execution Recorder (`execution_recorder.py`)
 
-- Added `init_code_routes(lease_mgr)` to route registration
+Records camera frames and robot state during code execution.
+
+- **Camera capture:** 0.5 Hz JPEG snapshots from all connected cameras
+- **State capture:** 10 Hz JSONL log of full robot state (arm joints, EE pose, base pose, gripper)
+- Both run as daemon threads, started/stopped automatically with each code execution
+- Output stored in `logs/code_executions/{execution_id}/`
+
+**Output files:**
+- `{NNNN}_{camera_name}.jpg` — Camera frames (zero-padded index + camera name)
+- `state_log.jsonl` — One JSON object per line with full state snapshot
+- `metadata.json` — Summary with frame count, state sample count, timestamps, camera info
+
+**State log format** (each line):
+```json
+{"timestamp":1740156123.456,"base":{"pose":[0,0,0],...},"arm":{"q":[...],"ee_pose":[...]},"gripper":{"position":0,...}}
+```
+
+### 5. Server Integration (`server.py`)
+
+- Added `init_code_routes(lease_mgr, camera_backend, state_agg)` to route registration
 - Added `app.state.background_tasks` for tracking async execution
 - Added cleanup on shutdown (stop running code, delete temp files)
 
@@ -211,6 +234,7 @@ cd examples
 
 **Executor:**
 - `code_executor.py`
+- `execution_recorder.py`
 
 **Routes:**
 - `routes/code_routes.py`

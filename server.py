@@ -105,6 +105,7 @@ def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> F
         rewind_base=True,
         rewind_arm=True,  # Enable coordinated arm+base rewind
         rewind_gripper=False,
+        auto_rewind_enabled=True,
     )
     rewind_orchestrator = RewindOrchestrator(system_logger, rewind_config, workspace_bounds)
     rewind_orchestrator.set_backends(
@@ -165,7 +166,7 @@ def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> F
     app.include_router(lease_router(lease_mgr))
     app.include_router(rewind_router(rewind_orchestrator, lease_mgr, system_logger, safety_monitor, arm_monitor, state_agg=state_agg))
     app.include_router(ws_router(state_agg, cfg, camera_backend, key_store=key_store))
-    app.include_router(init_code_routes(lease_mgr, camera_backend))
+    app.include_router(init_code_routes(lease_mgr, camera_backend, state_agg))
     app.include_router(sdk_docs_router)
     app.include_router(system_guide_router)
     app.include_router(yolo_router)

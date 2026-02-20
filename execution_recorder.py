@@ -1,4 +1,4 @@
-"""Records camera snapshots during code execution at 0.5 Hz."""
+"""Records camera snapshots and state data during code execution."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from backends.cameras import CameraBackend
+    from state import StateAggregator
 
 logger = logging.getLogger(__name__)
 
@@ -20,31 +21,37 @@ _CODE_DIR = Path(__file__).resolve().parent.parent / "logs" / "code_executions"
 # Capture interval (0.5 Hz = every 2 seconds)
 _CAPTURE_INTERVAL = 2.0
 
+# State capture interval (10 Hz)
+_STATE_INTERVAL = 0.1
+
 
 class ExecutionRecorder:
-    """Records camera snapshots during code execution.
+    """Records camera snapshots and state data during code execution.
 
-    Spawns a daemon thread that captures JPEG frames from all connected
-    cameras at 0.5 Hz and writes them to disk.
+    Spawns daemon threads that capture JPEG frames from all connected
+    cameras at 0.5 Hz and state data at 10 Hz, writing both to disk.
     """
 
     def __init__(self) -> None:
         self._thread: Optional[threading.Thread] = None
+        self._state_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._execution_id: Optional[str] = None
         self._camera_backend: Optional[CameraBackend] = None
+        self._state_agg: Optional[StateAggregator] = None
         self._output_dir: Optional[Path] = None
         self._name_map: Dict[str, str] = {}  # device_id -> friendly name
         self._timestamps: List[float] = []
         self._frame_index = 0
+        self._state_count = 0
         self._started_at = 0.0
 
     # -- lifecycle -----------------------------------------------------------
 
-    def start(self, execution_id: str, camera_backend: CameraBackend) -> None:
-        """Start recording frames for an execution.
+    def start(self, execution_id: str, camera_backend: CameraBackend, state_agg: Optional[StateAggregator] = None) -> None:
+        """Start recording frames and state for an execution.
 
-        No-op if already recording or camera backend has no cameras.
+        No-op if already recording.
         """
         if self._thread is not None and self._thread.is_alive():
             logger.warning("ExecutionRecorder: already recording, ignoring start()")
@@ -60,28 +67,43 @@ class ExecutionRecorder:
             safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
             self._name_map[device_id] = safe_name
 
-        if not self._name_map:
-            logger.debug("ExecutionRecorder: no cameras available, skipping recording")
+        has_cameras = bool(self._name_map)
+        has_state = state_agg is not None
+
+        if not has_cameras and not has_state:
+            logger.debug("ExecutionRecorder: no cameras or state available, skipping recording")
             return
 
         self._execution_id = execution_id
         self._camera_backend = camera_backend
+        self._state_agg = state_agg
         self._output_dir = _CODE_DIR / execution_id
         self._output_dir.mkdir(parents=True, exist_ok=True)
         self._timestamps = []
         self._frame_index = 0
+        self._state_count = 0
         self._started_at = time.time()
         self._stop_event.clear()
 
-        self._thread = threading.Thread(
-            target=self._capture_loop,
-            name=f"exec-recorder-{execution_id}",
-            daemon=True,
-        )
-        self._thread.start()
+        if has_cameras:
+            self._thread = threading.Thread(
+                target=self._capture_loop,
+                name=f"exec-recorder-{execution_id}",
+                daemon=True,
+            )
+            self._thread.start()
+
+        if has_state:
+            self._state_thread = threading.Thread(
+                target=self._state_capture_loop,
+                name=f"exec-state-{execution_id}",
+                daemon=True,
+            )
+            self._state_thread.start()
+
         logger.info(
-            "ExecutionRecorder: started for %s (%d cameras)",
-            execution_id, len(self._name_map),
+            "ExecutionRecorder: started for %s (%d cameras, state=%s)",
+            execution_id, len(self._name_map), has_state,
         )
 
     def stop(self) -> Dict[str, Any]:
@@ -91,16 +113,26 @@ class ExecutionRecorder:
             Summary dict with frame_count, duration, cameras.
             Empty dict if recorder was not running.
         """
-        if self._thread is None or not self._thread.is_alive():
+        camera_alive = self._thread is not None and self._thread.is_alive()
+        state_alive = self._state_thread is not None and self._state_thread.is_alive()
+
+        if not camera_alive and not state_alive:
             return {}
 
         self._stop_event.set()
-        self._thread.join(timeout=5.0)
-        self._thread = None
+
+        if camera_alive:
+            self._thread.join(timeout=5.0)
+            self._thread = None
+
+        if state_alive:
+            self._state_thread.join(timeout=5.0)
+            self._state_thread = None
 
         stopped_at = time.time()
         duration = stopped_at - self._started_at
         frame_count = self._frame_index
+        state_samples = self._state_count
 
         # Build frames list from files on disk
         frames_list = []
@@ -126,25 +158,34 @@ class ExecutionRecorder:
             "frames": frames_list,
         }
 
-        if self._output_dir and frame_count > 0:
+        # Add state recording metadata if state was captured
+        if state_samples > 0:
+            metadata["state_log"] = "state_log.jsonl"
+            metadata["state_interval"] = _STATE_INTERVAL
+            metadata["state_samples"] = state_samples
+
+        has_data = frame_count > 0 or state_samples > 0
+
+        if self._output_dir and has_data:
             meta_path = self._output_dir / "metadata.json"
             try:
                 meta_path.write_text(json.dumps(metadata, indent=2))
             except Exception as e:
                 logger.error("ExecutionRecorder: failed to write metadata: %s", e)
-        elif self._output_dir and frame_count == 0:
-            # No frames captured — remove empty directory
+        elif self._output_dir and not has_data:
+            # No data captured — remove empty directory
             try:
                 shutil.rmtree(self._output_dir, ignore_errors=True)
             except Exception:
                 pass
 
         logger.info(
-            "ExecutionRecorder: stopped for %s (%d frames, %.1fs)",
-            self._execution_id, frame_count, duration,
+            "ExecutionRecorder: stopped for %s (%d frames, %d state samples, %.1fs)",
+            self._execution_id, frame_count, state_samples, duration,
         )
 
         self._camera_backend = None
+        self._state_agg = None
         self._execution_id = None
         self._output_dir = None
 
@@ -187,6 +228,20 @@ class ExecutionRecorder:
         if wrote_any:
             self._timestamps.append(now)
             self._frame_index += 1
+
+    def _state_capture_loop(self) -> None:
+        """Background thread: capture state at 10 Hz to JSONL."""
+        state_path = self._output_dir / "state_log.jsonl"
+        with open(state_path, "w") as f:
+            while not self._stop_event.is_set():
+                try:
+                    state = self._state_agg.state  # thread-safe copy
+                    f.write(json.dumps(state, separators=(",", ":")) + "\n")
+                    f.flush()
+                    self._state_count += 1
+                except Exception as e:
+                    logger.error("ExecutionRecorder: state capture error: %s", e)
+                self._stop_event.wait(timeout=_STATE_INTERVAL)
 
     # -- queries -------------------------------------------------------------
 

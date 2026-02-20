@@ -80,7 +80,9 @@ Submit Python code that runs in a subprocess with access to a rich SDK.
 | `GET /code/sdk` | GET | **Auto-generated SDK documentation (JSON)** |
 | `GET /code/sdk/markdown` | GET | SDK documentation as markdown |
 | `GET /code/recordings` | GET | List all execution IDs with recordings |
-| `GET /code/recordings/{id}` | GET | Get recording for specific execution |
+| `GET /code/recordings/{id}` | GET | Get recording metadata (frames + state log) |
+| `GET /code/recordings/{id}/frames/{filename}` | GET | Serve a recorded JPEG frame |
+| `GET /code/recordings/{id}/state_log` | GET | State log as JSONL (arm, base, gripper at 10 Hz) |
 
 **Request format (`POST /code/execute`):**
 ```json
@@ -497,6 +499,7 @@ When `auto_rewind_enabled` is true (via `/rewind/monitor/enable`), the safety mo
 | `arm_monitor.py` | Arm crash recovery monitor |
 | `display_state.py` | DisplayBroadcaster for face display |
 | `code_executor.py` | Subprocess code execution engine |
+| `execution_recorder.py` | Camera + state recording during code execution |
 | `backends/base.py` | Base server client |
 | `backends/franka.py` | Franka server client |
 | `backends/gripper.py` | Gripper server client |

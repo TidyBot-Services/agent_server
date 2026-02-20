@@ -99,7 +99,7 @@ def get_recorder() -> ExecutionRecorder:
     return _recorder
 
 
-def init_code_routes(lease_manager: LeaseManager, camera_backend: CameraBackend):
+def init_code_routes(lease_manager: LeaseManager, camera_backend: CameraBackend, state_agg=None):
     """Initialize code routes with dependencies."""
 
     @router.post("/execute", response_model=CodeExecuteResponse)
@@ -162,7 +162,7 @@ def init_code_routes(lease_manager: LeaseManager, camera_backend: CameraBackend)
         recorder = get_recorder()
 
         async def run_code():
-            recorder.start(execution_id, camera_backend)
+            recorder.start(execution_id, camera_backend, state_agg)
             try:
                 result = await executor.execute(
                     code=body.code,
@@ -369,6 +369,25 @@ def init_code_routes(lease_manager: LeaseManager, camera_backend: CameraBackend)
         return Response(
             content=filepath.read_bytes(),
             media_type="image/jpeg",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
+    @router.get("/recordings/{execution_id}/state_log")
+    async def get_recording_state_log(execution_id: str):
+        """Serve the state log JSONL file for an execution.
+
+        No lease required (read-only).
+        """
+        from pathlib import Path
+        from execution_recorder import _CODE_DIR
+
+        state_path = _CODE_DIR / execution_id / "state_log.jsonl"
+        if not state_path.exists():
+            raise HTTPException(status_code=404, detail="State log not found")
+
+        return Response(
+            content=state_path.read_bytes(),
+            media_type="application/x-ndjson",
             headers={"Cache-Control": "public, max-age=86400"},
         )
 

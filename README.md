@@ -78,6 +78,8 @@ Dashboard at **http://localhost:8080/services/dashboard** — SDK docs at **http
 
 **Trajectory recording** — Every position command is logged as a waypoint. This powers the rewind system: undo the last N steps, N%, or rewind all the way home. The safety monitor can auto-rewind when workspace bounds are violated.
 
+**Execution recording** — During code execution, camera frames (0.5 Hz JPEG) and full robot state (10 Hz JSONL — arm joints, EE pose, base pose, gripper) are saved to disk. Retrieve after execution via `/code/recordings/{id}` endpoints for post-hoc analysis.
+
 **Safety envelope** — Workspace bounds, velocity limits, and gripper force caps are enforced. If the arm leaves its safe workspace, the safety monitor can automatically trigger a rewind.
 
 **Graceful degradation** — The server keeps running even if backends are down. `GET /health` shows what's connected. SDK methods for unavailable backends print a warning but don't crash.
@@ -119,6 +121,7 @@ Dependencies are enforced: `franka_server` won't start without `unlock`, and aut
 ├── server.py                  # FastAPI application
 ├── config.py                  # Configuration and service definitions
 ├── code_executor.py           # Subprocess code execution engine
+├── execution_recorder.py      # Camera + state recording during execution
 ├── lease.py                   # Lease manager (queue, idle detection)
 ├── state.py                   # State aggregator (polls backends)
 ├── safety.py                  # Safety envelope (bounds, limits)

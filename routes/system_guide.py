@@ -323,6 +323,20 @@ def generate_guide(app=None) -> dict:
                         ),
                     },
                     {
+                        "name": "Recorded state log",
+                        "description": (
+                            "Robot state (arm joints, EE pose, base pose, gripper) "
+                            "is recorded at 10 Hz during every code execution as "
+                            "JSONL (one JSON object per line). Retrieve via "
+                            "`GET /code/recordings/{execution_id}/state_log` "
+                            "(application/x-ndjson). Each line has `timestamp`, "
+                            "`arm` (q, dq, ee_pose), `base` (pose), `gripper` "
+                            "(position, object_detected). The recording metadata "
+                            "(`GET /code/recordings/{execution_id}`) includes "
+                            "`state_samples` count and `state_interval`."
+                        ),
+                    },
+                    {
                         "name": "Live camera (use sparingly)",
                         "description": (
                             "`GET /cameras/{id}/frame` returns a live JPEG. "
@@ -361,9 +375,10 @@ def generate_guide(app=None) -> dict:
                     {"method": "GET", "path": "/cameras/{device_id}/frame", "description": "Get a camera frame (JPEG)"},
                     {"method": "WS", "path": "/ws/state", "description": "Streaming robot state"},
                     {"method": "WS", "path": "/ws/cameras", "description": "Streaming camera feeds"},
-                    {"method": "GET", "path": "/code/recordings", "description": "List execution IDs with recorded frames"},
-                    {"method": "GET", "path": "/code/recordings/{execution_id}", "description": "Recording metadata"},
+                    {"method": "GET", "path": "/code/recordings", "description": "List execution IDs with recorded frames and state logs"},
+                    {"method": "GET", "path": "/code/recordings/{execution_id}", "description": "Recording metadata (frames, state log, timestamps)"},
                     {"method": "GET", "path": "/code/recordings/{execution_id}/frames/{filename}", "description": "Retrieve a recorded JPEG frame"},
+                    {"method": "GET", "path": "/code/recordings/{execution_id}/state_log", "description": "State log as JSONL (arm, base, gripper at 10 Hz)"},
                 ],
             },
             "display": {
