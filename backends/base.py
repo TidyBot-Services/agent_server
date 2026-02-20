@@ -104,6 +104,18 @@ class BaseBackend:
             velocity = velocity.tolist()
         return {"base_pose": pose, "base_velocity": velocity}
 
+    def get_battery_voltage(self) -> float:
+        """Return battery supply voltage in volts.
+
+        Returns 0.0 on error or in dry-run mode.
+        """
+        if self._dry_run or self._base is None:
+            return 0.0
+        try:
+            return float(self._base.get_battery_voltage())
+        except Exception:
+            return 0.0
+
     # -- commands ------------------------------------------------------------
 
     def _call_base(self, method_name: str, *args, **kwargs):

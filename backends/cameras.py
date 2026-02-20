@@ -143,6 +143,7 @@ class CameraBackend:
             return
 
         for cam in self._client.latest_state.cameras:
+            # Cache color intrinsics
             try:
                 intrinsics = self._client.get_intrinsics("color", cam.device_id)
                 if intrinsics:
@@ -152,11 +153,22 @@ class CameraBackend:
             except Exception as e:
                 logger.warning("CameraBackend: failed to get intrinsics for %s: %s",
                                cam.name, e)
+            # Cache IR intrinsics (left and right have different intrinsics)
+            for ir_stream in ("infrared_left", "infrared_right"):
+                try:
+                    ir_intr = self._client.get_intrinsics(ir_stream, cam.device_id)
+                    if ir_intr:
+                        self._intrinsics_cache[f"{cam.device_id}:{ir_stream}"] = ir_intr
+                        logger.info("CameraBackend: cached %s intrinsics for %s",
+                                   ir_stream, cam.name)
+                except Exception as e:
+                    logger.debug("CameraBackend: no %s intrinsics for %s: %s",
+                                ir_stream, cam.name, e)
 
     # -- frame callback ------------------------------------------------------
 
     def _on_frame(self, frame: DecodedFrame) -> None:
-        """Callback for received frames - cache as JPEG (color) or PNG (depth)."""
+        """Callback for received frames - cache as JPEG (color/IR) or PNG (depth)."""
         if not CV2_AVAILABLE:
             return
 
@@ -171,6 +183,11 @@ class CameraBackend:
                 _, png = cv2.imencode(".png", frame.frame)
                 with self._frame_lock:
                     self._frame_cache[f"{frame.device_id}:depth"] = (png.tobytes(), now)
+            elif frame.stream_type in ("infrared_left", "infrared_right"):
+                encode_params = [cv2.IMWRITE_JPEG_QUALITY, self._cfg.quality]
+                _, jpeg = cv2.imencode(".jpg", frame.frame, encode_params)
+                with self._frame_lock:
+                    self._frame_cache[f"{frame.device_id}:{frame.stream_type}"] = (jpeg.tobytes(), now)
         except Exception as e:
             logger.error("CameraBackend: error encoding frame: %s", e)
 
@@ -237,6 +254,46 @@ class CameraBackend:
         logger.debug("CameraBackend: no fresh frame available for device=%s", device)
         return None
 
+    def get_ir_frame(self, side: str = "left", device: Optional[str] = None) -> Optional[bytes]:
+        """Get latest IR frame as JPEG bytes.
+
+        Args:
+            side: "left" or "right"
+            device: Device ID, or None for first available
+
+        Returns:
+            JPEG bytes or None
+        """
+        if self._dry_run:
+            return None
+
+        stream = f"infrared_{side}"
+        now = time.time()
+
+        with self._frame_lock:
+            if device:
+                entry = self._frame_cache.get(f"{device}:{stream}")
+                if entry:
+                    data, ts = entry
+                    if now - ts < self._frame_max_age:
+                        return data
+            else:
+                for key, entry in self._frame_cache.items():
+                    if key.endswith(f":{stream}"):
+                        data, ts = entry
+                        if now - ts < self._frame_max_age:
+                            return data
+
+        # Fallback to CameraClient's latest decoded frame
+        if self._client and self._connected:
+            decoded = self._client.get_latest_frame(stream, device)
+            if decoded is not None:
+                jpeg = self._encode_decoded_frame(decoded)
+                if jpeg:
+                    return jpeg
+
+        return None
+
     def get_all_frames(self) -> Dict[str, bytes]:
         """Get all cached color frames (bytes only, no timestamps).
 
@@ -292,7 +349,7 @@ class CameraBackend:
 
         Args:
             device_id: Camera device ID, or None for first available
-            stream_type: Stream type ("color" or "depth")
+            stream_type: Stream type ("color", "depth", "infrared_left", "infrared_right")
 
         Returns:
             Dict with {fx, fy, ppx, ppy, width, height, depth_scale, ...} or None
@@ -300,12 +357,25 @@ class CameraBackend:
         if self._dry_run:
             return None
 
+        # IR streams are cached under "device_id:stream_type" keys
+        if stream_type in ("infrared_left", "infrared_right"):
+            if device_id:
+                return self._intrinsics_cache.get(f"{device_id}:{stream_type}")
+            # Find first available IR intrinsics
+            suffix = f":{stream_type}"
+            for k, v in self._intrinsics_cache.items():
+                if k.endswith(suffix):
+                    return v
+            return None
+
+        # Color/depth intrinsics are cached under bare device_id
         if device_id:
             return self._intrinsics_cache.get(device_id)
 
-        # Return first available
-        for v in self._intrinsics_cache.values():
-            return v
+        # Return first available (skip IR entries)
+        for k, v in self._intrinsics_cache.items():
+            if ":" not in k:
+                return v
         return None
 
     def get_latest_decoded_frame(

@@ -171,6 +171,14 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <div class="state-row"><span class="state-label">Width</span><span class="state-value" id="gripper-width">—</span></div>
       <div class="state-row"><span class="state-label">Grasped</span><span class="state-value" id="gripper-grasped">—</span></div>
     </div>
+    <div class="state-card">
+      <h3>Battery</h3>
+      <div class="state-row"><span class="state-label">Voltage</span><span class="state-value" id="battery-voltage">—</span></div>
+      <div class="state-row"><span class="state-label">Level</span><span class="state-value" id="battery-percent">—</span></div>
+      <div style="margin-top: 8px; background: #0d1117; border-radius: 4px; height: 8px; overflow: hidden;">
+        <div id="battery-bar" style="height: 100%; width: 0%; border-radius: 4px; transition: width 1s, background 1s;"></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -224,10 +232,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       </label>
     </div>
     <div class="control-row">
-      <span class="control-label">Auto-Rewind %</span>
-      <input type="number" id="auto-rewind-pct" class="control-input" min="0.1" max="100" step="0.1" value="10" onchange="updateAutoRewindPct(this.value)">
-    </div>
-    <div class="control-row">
       <span class="control-label">Boundary Status</span>
       <span id="boundary-status" class="boundary-status safe">Safe</span>
     </div>
@@ -246,6 +250,22 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <button class="btn-action" style="background: #666; margin-top: 8px;" onclick="clearTrajectory(this)">
       Clear Trajectory
     </button>
+    <div style="border-top: 1px solid #1a1a2e; margin-top: 12px; padding-top: 12px;">
+      <div class="control-row">
+        <span class="control-label">Workspace Teach</span>
+        <span id="teach-status" style="font-size: 12px; color: #666;">Inactive</span>
+      </div>
+      <div class="control-row">
+        <span class="control-label">Boundary Type</span>
+        <span id="boundary-type" style="font-size: 12px; color: #888;">AABB</span>
+      </div>
+      <button id="btn-teach" class="btn-action" style="background: #1565c0; margin-top: 8px;" onclick="toggleTeach(this)">
+        Start Teach
+      </button>
+      <button id="btn-reset-bounds" class="btn-action" style="background: #666; margin-top: 4px; font-size: 11px;" onclick="resetBounds(this)">
+        Reset to AABB
+      </button>
+    </div>
   </div>
 
   <div class="trajectory-card">
@@ -505,6 +525,24 @@ async function pollState() {
     document.getElementById("gripper-width").textContent = ((gripper.width || 0) * 1000).toFixed(1) + " mm";
     document.getElementById("gripper-grasped").textContent = gripper.is_grasped ? "Yes" : "No";
 
+    // Battery
+    const battV = base.battery_voltage || 0;
+    if (battV > 0) {
+      // Linear map: 11.0V = 0%, 12.6V = 100% (3S LiPo)
+      const pct = Math.max(0, Math.min(100, (battV - 11.0) / (12.6 - 11.0) * 100));
+      document.getElementById("battery-voltage").textContent = battV.toFixed(2) + " V";
+      document.getElementById("battery-percent").textContent = Math.round(pct) + "%";
+      const bar = document.getElementById("battery-bar");
+      bar.style.width = pct + "%";
+      bar.style.background = pct > 30 ? "#4caf50" : pct > 15 ? "#ff9800" : "#f44336";
+    } else {
+      document.getElementById("battery-voltage").textContent = "—";
+      document.getElementById("battery-voltage").classList.add("disconnected");
+      document.getElementById("battery-percent").textContent = "—";
+      document.getElementById("battery-percent").classList.add("disconnected");
+      document.getElementById("battery-bar").style.width = "0%";
+    }
+
   } catch (e) {
     console.error("State poll error:", e);
   }
@@ -549,18 +587,6 @@ async function toggleAutoRewind(enabled) {
   }
 }
 
-async function updateAutoRewindPct(pct) {
-  try {
-    await fetch("/rewind/monitor/config", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ auto_rewind_percentage: parseFloat(pct) })
-    });
-  } catch (e) {
-    console.error("Failed to update auto-rewind percentage:", e);
-  }
-}
-
 async function updateManualRewindPct(pct) {
   try {
     await fetch("/rewind/monitor/config", {
@@ -591,6 +617,94 @@ async function clearTrajectory(btn) {
     alert("Error: " + e.message);
   } finally {
     btn.disabled = false;
+  }
+}
+
+let _isTeaching = false;
+async function toggleTeach(btn) {
+  btn.disabled = true;
+  try {
+    if (_isTeaching) {
+      const resp = await fetch("/workspace/teach/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ margin: 0.0, save: true })
+      });
+      const result = await resp.json();
+      if (result.ok) {
+        _isTeaching = false;
+        btn.textContent = "Start Teach";
+        btn.style.background = "#1565c0";
+      } else {
+        alert("Teach stop failed: " + (result.error || "unknown"));
+      }
+    } else {
+      const resp = await fetch("/workspace/teach/start", { method: "POST" });
+      const result = await resp.json();
+      if (result.ok) {
+        _isTeaching = true;
+        btn.textContent = "Stop Teach";
+        btn.style.background = "#c62828";
+      } else {
+        alert("Teach start failed: " + (result.error || "unknown"));
+      }
+    }
+    await pollTeachStatus();
+  } catch (e) {
+    console.error("Teach toggle error:", e);
+    alert("Error: " + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function resetBounds(btn) {
+  if (!confirm("Reset workspace boundary to AABB (remove hull)?")) return;
+  btn.disabled = true;
+  try {
+    await fetch("/workspace/bounds/reset", { method: "POST" });
+    await pollTeachStatus();
+  } catch (e) {
+    console.error("Reset bounds error:", e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function pollTeachStatus() {
+  try {
+    const resp = await fetch("/workspace/teach/status");
+    const data = await resp.json();
+    const statusEl = document.getElementById("teach-status");
+    const typeEl = document.getElementById("boundary-type");
+    const btn = document.getElementById("btn-teach");
+    const resetBtn = document.getElementById("btn-reset-bounds");
+
+    _isTeaching = data.is_teaching;
+
+    if (data.is_teaching) {
+      statusEl.textContent = "Recording (" + data.point_count + " pts, " + (data.teach_duration_s || 0) + "s)";
+      statusEl.style.color = "#ff9800";
+      btn.textContent = "Stop Teach";
+      btn.style.background = "#c62828";
+    } else {
+      statusEl.textContent = "Inactive";
+      statusEl.style.color = "#666";
+      btn.textContent = "Start Teach";
+      btn.style.background = "#1565c0";
+    }
+
+    if (data.has_hull) {
+      typeEl.textContent = "Hull (" + data.hull_vertex_count + " vertices, " + data.area_m2 + " m\u00B2)";
+      typeEl.style.color = "#4caf50";
+      resetBtn.style.display = "";
+    } else {
+      typeEl.textContent = "AABB";
+      typeEl.style.color = "#888";
+      resetBtn.style.display = "none";
+    }
+  } catch (e) {
+    console.error("Teach status poll error:", e);
   }
 }
 
@@ -764,11 +878,7 @@ async function pollRewind() {
       badge.className = "status-badge disabled";
     }
 
-    // Update percentage inputs (only if not focused)
-    const autoPctEl = document.getElementById("auto-rewind-pct");
-    if (autoPctEl && autoPctEl !== document.activeElement) {
-      autoPctEl.value = monitor.auto_rewind_percentage || 10;
-    }
+    // Update manual percentage input (only if not focused)
     const manualPctEl = document.getElementById("manual-rewind-pct");
     if (manualPctEl && manualPctEl !== document.activeElement) {
       manualPctEl.value = monitor.manual_rewind_percentage || 5;
@@ -869,15 +979,32 @@ function drawTrajectory(waypoints, currentPose) {
   ctx.lineTo(origin.x, h);
   ctx.stroke();
 
-  // Draw workspace boundary
+  // Draw workspace boundary (hull polygon or AABB rectangle)
   ctx.strokeStyle = "#f44336";
   ctx.lineWidth = 2;
   ctx.setLineDash([8, 4]);
-  const c1 = worldToCanvas(workspaceBounds.x_min, workspaceBounds.y_min);
-  const c2 = worldToCanvas(workspaceBounds.x_max, workspaceBounds.y_max);
-  const rx = Math.min(c1.x, c2.x);
-  const ry = Math.min(c1.y, c2.y);
-  ctx.strokeRect(rx, ry, Math.abs(c2.x - c1.x), Math.abs(c2.y - c1.y));
+  if (workspaceBounds.hull_vertices && workspaceBounds.hull_vertices.length >= 3) {
+    // Draw convex hull polygon
+    ctx.beginPath();
+    const h0 = worldToCanvas(workspaceBounds.hull_vertices[0][0], workspaceBounds.hull_vertices[0][1]);
+    ctx.moveTo(h0.x, h0.y);
+    for (let i = 1; i < workspaceBounds.hull_vertices.length; i++) {
+      const hp = worldToCanvas(workspaceBounds.hull_vertices[i][0], workspaceBounds.hull_vertices[i][1]);
+      ctx.lineTo(hp.x, hp.y);
+    }
+    ctx.closePath();
+    ctx.stroke();
+    // Semi-transparent fill
+    ctx.fillStyle = "rgba(244, 67, 54, 0.05)";
+    ctx.fill();
+  } else {
+    // Draw AABB rectangle
+    const c1 = worldToCanvas(workspaceBounds.x_min, workspaceBounds.y_min);
+    const c2 = worldToCanvas(workspaceBounds.x_max, workspaceBounds.y_max);
+    const rx = Math.min(c1.x, c2.x);
+    const ry = Math.min(c1.y, c2.y);
+    ctx.strokeRect(rx, ry, Math.abs(c2.x - c1.x), Math.abs(c2.y - c1.y));
+  }
   ctx.setLineDash([]);
 
   // Draw odom trajectory path (lighter blue)
@@ -990,7 +1117,8 @@ async function pollTrajectory() {
         x_min: boundary.bounds.x_min,
         x_max: boundary.bounds.x_max,
         y_min: boundary.bounds.y_min,
-        y_max: boundary.bounds.y_max
+        y_max: boundary.bounds.y_max,
+        hull_vertices: boundary.hull_vertices || null
       };
     }
 
@@ -1519,6 +1647,7 @@ pollRewindLogs();
 pollServerLogs();
 pollCodeLogs();
 pollLease();
+pollTeachStatus();
 setInterval(poll, 2000);
 setInterval(pollState, 200);
 setInterval(pollRewind, 500);
@@ -1527,6 +1656,7 @@ setInterval(pollRewindLogs, 1000);
 setInterval(pollServerLogs, 2000);
 setInterval(pollCodeLogs, 1000);
 setInterval(pollLease, 1000);
+setInterval(pollTeachStatus, 1000);
 </script></body></html>"""
 
 

@@ -100,15 +100,28 @@ class SafetyMonitor:
                 interval = cfg.monitor_interval
 
                 if cfg.auto_rewind_enabled and not self._orchestrator.is_rewinding:
+                    # Auto-disable if mocap drops out
+                    agg = self._state_agg.state
+                    base_info = agg.get("base", {})
+                    if base_info.get("pose_source") != "mocap":
+                        cfg.auto_rewind_enabled = False
+                        logger.warning(
+                            "SafetyMonitor: mocap lost — auto-rewind disabled "
+                            "(re-enable when mocap is tracking)"
+                        )
+                        await asyncio.sleep(interval)
+                        continue
+
                     now = time.time()
                     # Respect cooldown
                     if now - self._last_trigger_time >= self.COOLDOWN_SECONDS:
                         triggered = False
                         reason = ""
 
-                        # 1. Boundary check
+                        # 1. Boundary check (mocap pose only)
                         try:
-                            if self._orchestrator.is_base_out_of_bounds():
+                            pose = base_info.get("pose", [0, 0, 0])
+                            if self._orchestrator.is_base_out_of_bounds({"base_pose": pose}):
                                 triggered = True
                                 reason = "boundary violation"
                         except Exception:
@@ -186,12 +199,10 @@ class SafetyMonitor:
     # -- rewind trigger ------------------------------------------------------
 
     async def _trigger_rewind(self, reason: str) -> None:
-        """Stop the base and trigger auto-rewind."""
-        cfg = self._orchestrator.config
+        """Stop the base and rewind to last safe waypoint."""
         self._last_trigger_time = time.time()
 
-        logger.warning("SafetyMonitor: %s — stopping base and rewinding %.1f%%",
-                        reason, cfg.auto_rewind_percentage)
+        logger.warning("SafetyMonitor: %s — stopping base and rewinding to safe waypoint", reason)
 
         # Voice announcement
         if self._display is not None:
@@ -207,11 +218,9 @@ class SafetyMonitor:
         except Exception as e:
             logger.error("SafetyMonitor: failed to stop base: %s", e)
 
-        # Rewind (bypasses lease — safety override)
+        # Rewind to last in-bounds waypoint (bypasses lease — safety override)
         try:
-            result = await self._orchestrator.rewind_percentage(
-                cfg.auto_rewind_percentage, dry_run=False
-            )
+            result = await self._orchestrator.rewind_to_safe(dry_run=False)
             if result.success:
                 self._auto_rewind_count += 1
                 self._last_auto_rewind_time = time.time()

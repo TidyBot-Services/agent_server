@@ -187,8 +187,8 @@ class SafetyConfig:
     arm_workspace_min: list[float] = field(default_factory=lambda: [-0.8, -0.8, 0.0])
     arm_workspace_max: list[float] = field(default_factory=lambda: [0.8, 0.8, 1.2])
     # Base workspace bounding box [min, max] for x, y (meters)
-    base_workspace_min: list[float] = field(default_factory=lambda: [-1, -1])
-    base_workspace_max: list[float] = field(default_factory=lambda: [1, 1])
+    base_workspace_min: list[float] = field(default_factory=lambda: [-10, -10])
+    base_workspace_max: list[float] = field(default_factory=lambda: [10, 10])
     # Max velocities
     base_max_linear_vel: float = 0.5  # m/s
     base_max_angular_vel: float = 1.57  # rad/s

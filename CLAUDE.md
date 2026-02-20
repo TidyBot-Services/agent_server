@@ -366,6 +366,78 @@ curl -X PUT localhost:8080/rewind/config \
   -d '{"chunk_size": 2, "chunk_duration": 0.5, "settle_time": 0.1}'
 ```
 
+## Workspace Boundary (Convex Hull)
+
+The workspace boundary defines where the mobile base is allowed to drive. It uses a **convex hull** taught by physically pushing the robot around the perimeter. The hull is used by the safety monitor to trigger auto-rewind when the base leaves bounds.
+
+### How It Works
+
+1. **Default:** An axis-aligned bounding box (AABB) from `SafetyConfig` (`[-10, -10]` to `[10, 10]` by default)
+2. **Teaching:** An operator pushes the robot around the workspace perimeter while the server records base XY positions at 10 Hz
+3. **Hull computation:** When teaching stops, a 2D convex hull is computed from the recorded points (Andrew's monotone chain algorithm)
+4. **Persistence:** The hull is saved to `workspace_bounds.json` and auto-loaded on server startup
+5. **Safety:** When a hull is active, `WorkspaceBounds.is_base_in_bounds()` checks the hull instead of the AABB. The safety monitor uses this for auto-rewind triggers.
+
+### Teaching Flow
+
+```bash
+# 1. Start teaching (admin only)
+curl -X POST localhost:8080/workspace/teach/start
+
+# 2. Push the robot around the workspace boundary...
+#    Positions are recorded at 10 Hz, deduped by 1 cm threshold
+
+# 3. Stop teaching — computes hull, saves to disk
+curl -X POST localhost:8080/workspace/teach/stop \
+  -H "Content-Type: application/json" \
+  -d '{"margin": 0.0, "save": true}'
+# margin: expand hull outward by N meters (0 = exact hull)
+```
+
+### Endpoints
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/workspace/teach/start` | POST | Admin | Start recording base positions |
+| `/workspace/teach/stop` | POST | Admin | Stop recording, compute hull, save |
+| `/workspace/teach/status` | GET | Any | Teaching status and current bounds |
+| `/workspace/bounds` | GET | Any | Current boundary (hull vertices or AABB) |
+| `/workspace/bounds/reset` | POST | Admin | Clear hull, revert to AABB, delete saved file |
+
+### Response: `GET /workspace/bounds`
+
+```json
+{
+  "is_teaching": false,
+  "point_count": 0,
+  "has_hull": true,
+  "boundary_type": "hull",
+  "bounds": {
+    "base_x_min": -3.35,
+    "base_x_max": 0.94,
+    "base_y_min": -1.54,
+    "base_y_max": 0.92,
+    "hull_vertices": [[-3.35, -0.53], [0.94, -1.17], ...]
+  },
+  "hull_vertices": [[-3.35, -0.53], ...],
+  "hull_vertex_count": 89,
+  "area_m2": 8.31
+}
+```
+
+### Integration with Safety Monitor
+
+When `auto_rewind_enabled` is true (via `/rewind/monitor/enable`), the safety monitor checks `is_base_out_of_bounds()` at the configured `monitor_interval`. If the base exits the hull (with `safety_margin` inset), it stops the base and triggers an auto-rewind.
+
+### Key Files
+
+| File | Description |
+|------|-------------|
+| `workspace_teacher.py` | WorkspaceTeacher class (recording, hull computation, persistence) |
+| `routes/workspace_routes.py` | REST API routes for teaching and bounds |
+| `workspace_bounds.json` | Persisted hull data (auto-loaded on startup) |
+| `system_logger/system_logger/config.py` | `WorkspaceBounds` dataclass, `convex_hull_2d()`, point-in-hull tests |
+
 ## State Response Schema
 
 ```json

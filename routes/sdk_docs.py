@@ -183,7 +183,7 @@ if rewind.is_out_of_bounds():
 
         docs["modules"]["sensors"] = {
             "import": "from robot_sdk import sensors",
-            "description": "Read-only sensor access - arm, base, gripper state",
+            "description": "Read-only sensor access - arm, base, gripper state, camera frames, stereo IR pairs",
             **get_class_info(SensorAPI),
         }
 

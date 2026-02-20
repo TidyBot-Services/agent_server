@@ -68,7 +68,7 @@ def _format_result(result) -> dict:
     }
 
 
-def create_router(rewind_orchestrator, lease_mgr, system_logger, safety_monitor=None, arm_monitor=None):
+def create_router(rewind_orchestrator, lease_mgr, system_logger, safety_monitor=None, arm_monitor=None, state_agg=None):
     """Create rewind routes with injected dependencies."""
 
     def _check_lease(lease_id: Optional[str]) -> None:
@@ -307,6 +307,13 @@ def create_router(rewind_orchestrator, lease_mgr, system_logger, safety_monitor=
         """Update monitor config (dashboard compatibility)."""
         cfg = rewind_orchestrator.config
         if req.auto_rewind_enabled is not None:
+            if req.auto_rewind_enabled and state_agg is not None:
+                base_info = state_agg.state.get("base", {})
+                if base_info.get("pose_source") != "mocap":
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Cannot enable auto-rewind without mocap tracking.",
+                    )
             cfg.auto_rewind_enabled = req.auto_rewind_enabled
         if req.auto_rewind_percentage is not None:
             cfg.auto_rewind_percentage = req.auto_rewind_percentage
@@ -325,7 +332,15 @@ def create_router(rewind_orchestrator, lease_mgr, system_logger, safety_monitor=
     @router.post("/monitor/enable", include_in_schema=False,
                  dependencies=[Depends(require_admin)])
     async def enable_auto_rewind():
-        """Enable auto-rewind."""
+        """Enable auto-rewind. Requires mocap tracking (odom drifts)."""
+        if state_agg is not None:
+            base_info = state_agg.state.get("base", {})
+            if base_info.get("pose_source") != "mocap":
+                raise HTTPException(
+                    status_code=409,
+                    detail="Cannot enable auto-rewind without mocap tracking. "
+                           "Odom drifts and boundary checks would be unreliable.",
+                )
         rewind_orchestrator.config.auto_rewind_enabled = True
         return {"auto_rewind_enabled": True}
 

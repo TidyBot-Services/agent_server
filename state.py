@@ -87,6 +87,9 @@ class StateAggregator:
         self._prev_base_pose: list[float] = []
         self._prev_gripper_pos: float = 0.0
         self._last_moved_at: float = 0.0
+        # Battery voltage (polled at lower rate)
+        self._battery_voltage: float = 0.0
+        self._last_battery_poll: float = 0.0
 
     @property
     def state(self) -> dict[str, Any]:
@@ -215,6 +218,16 @@ class StateAggregator:
                         base_state = await loop.run_in_executor(None, self._base.get_state)
                     except Exception as e:
                         logger.warning("Base state poll failed: %s (%s)", e, type(e).__name__)
+                    # Poll battery voltage at lower rate (every 5s)
+                    now = time.time()
+                    if now - self._last_battery_poll > 5.0:
+                        self._last_battery_poll = now
+                        try:
+                            self._battery_voltage = await loop.run_in_executor(
+                                None, self._base.get_battery_voltage
+                            )
+                        except Exception:
+                            pass
 
                 if self._franka.is_connected:
                     try:
@@ -264,6 +277,7 @@ class StateAggregator:
                         "odom_pose": odom_pose,
                         "mocap_pose": mocap_state.get("mocap_pose"),
                         "mocap_tracking": mocap_state.get("tracking_valid", False),
+                        "battery_voltage": round(self._battery_voltage, 2),
                     },
                     "arm": {
                         "q": arm_q,

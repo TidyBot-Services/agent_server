@@ -146,6 +146,12 @@ def generate_guide(app=None) -> dict:
     except ImportError:
         pass
 
+    # Collect workspace endpoints if app is available
+    workspace_endpoints = _collect_endpoints(app, ["/workspace"]) if app else [
+        {"method": "GET", "path": "/workspace/bounds", "description": "Current boundary (hull or AABB)"},
+        {"method": "GET", "path": "/workspace/teach/status", "description": "Teaching status and current bounds"},
+    ]
+
     return {
         "title": "TidyBot Getting Started Guide",
         "sections": {
@@ -404,6 +410,29 @@ def generate_guide(app=None) -> dict:
                     "display.show_image(), display.show_plot(), display.clear()"
                 ),
             },
+            "workspace_boundary": {
+                "title": "Workspace Boundary",
+                "description": (
+                    "The mobile base has a workspace boundary that limits where "
+                    "it can drive. The boundary is defined as a 2D convex hull "
+                    "taught by physically pushing the robot around the perimeter. "
+                    "When active, the safety monitor uses this boundary to trigger "
+                    "auto-rewind if the base leaves bounds."
+                ),
+                "how_it_works": [
+                    "An operator teaches the boundary by pushing the robot around the workspace perimeter (POST /workspace/teach/start, then POST /workspace/teach/stop)",
+                    "The server records base XY positions at 10 Hz and computes a convex hull",
+                    "The hull is saved to disk and auto-loaded on server startup",
+                    "When the safety monitor is enabled, it checks if the base is inside the hull and triggers auto-rewind on violations",
+                ],
+                "endpoints": workspace_endpoints,
+                "note": (
+                    "You can check the current boundary with GET /workspace/bounds. "
+                    "If has_hull is true, the boundary is a convex hull. If false, "
+                    "it falls back to a large default bounding box. Teaching is "
+                    "admin-only; reading bounds requires no special permissions."
+                ),
+            },
         },
     }
 
@@ -536,6 +565,27 @@ def _render_markdown(guide: dict) -> str:
         md += "\n"
 
         md += f"> {disp['sdk_note']}\n\n"
+
+    # Workspace boundary section
+    if "workspace_boundary" in guide["sections"]:
+        ws = guide["sections"]["workspace_boundary"]
+        md += f"## {ws['title']}\n\n"
+        md += f"{ws['description']}\n\n"
+
+        md += "### How It Works\n\n"
+        for i, step in enumerate(ws["how_it_works"], 1):
+            md += f"{i}. {step}\n"
+        md += "\n"
+
+        if ws.get("endpoints"):
+            md += "### Endpoints\n\n"
+            md += "| Method | Path | Description |\n"
+            md += "|--------|------|-------------|\n"
+            for ep in ws["endpoints"]:
+                md += f"| `{ep['method']}` | `{ep['path']}` | {ep['description']} |\n"
+            md += "\n"
+
+        md += f"> {ws['note']}\n\n"
 
     # Links
     md += "## More Documentation\n\n"

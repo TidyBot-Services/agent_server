@@ -126,6 +126,11 @@ def create_router(state_agg, config, camera_backend=None, key_store: KeyStore | 
                             _, encoded = cv2.imencode(".png", frame.frame)
                             data = encoded.tobytes()
                             fmt = "png"
+                        elif stream_type in ("infrared_left", "infrared_right") and CV2_AVAILABLE:
+                            encode_params = [cv2.IMWRITE_JPEG_QUALITY, subscription.quality]
+                            _, encoded = cv2.imencode(".jpg", frame.frame, encode_params)
+                            data = encoded.tobytes()
+                            fmt = "jpeg"
                         else:
                             data = frame.frame.tobytes()
                             fmt = "raw"

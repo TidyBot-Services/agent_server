@@ -46,13 +46,19 @@ def create_router(state_agg, camera_backend, lease_mgr, base_backend, franka_bac
 
         Args:
             device_id: Camera device identifier (or "any" for first available)
-            stream: Stream type (color, depth)
+            stream: Stream type (color, depth, infrared_left, infrared_right)
         """
         resolved = None if device_id == "any" else device_id
         if stream == "color":
             frame = camera_backend.get_frame(resolved)
             if frame is None:
                 return JSONResponse({"error": "no frame available"}, status_code=503)
+            return Response(content=frame, media_type="image/jpeg", headers=_no_cache_headers)
+        elif stream in ("infrared_left", "infrared_right"):
+            side = stream.split("_")[1]  # "left" or "right"
+            frame = camera_backend.get_ir_frame(side, resolved)
+            if frame is None:
+                return JSONResponse({"error": f"no {stream} frame available"}, status_code=503)
             return Response(content=frame, media_type="image/jpeg", headers=_no_cache_headers)
         else:
             # For depth, get raw decoded frame

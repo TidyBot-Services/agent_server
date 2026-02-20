@@ -713,25 +713,79 @@ class YoloAPI:
         depth_image: np.ndarray,
         intrinsics: Dict,
         region_size: int = 5,
+        mask: Optional[np.ndarray] = None,
     ) -> Tuple[List[float], float]:
         """Project a pixel to 3D using depth and camera intrinsics.
 
-        Uses median depth in a region around the pixel for noise robustness.
+        When a segmentation mask is provided, uses all mask pixels weighted
+        by a Gaussian centered on the mask centroid (center pixels contribute
+        more than peripheral ones).  Falls back to a small region around
+        (u, v) when no mask is available.
 
         Args:
-            u: Pixel x coordinate
-            v: Pixel y coordinate
+            u: Pixel x coordinate (bbox center, used as fallback)
+            v: Pixel y coordinate (bbox center, used as fallback)
             depth_image: uint16 depth image
             intrinsics: Camera intrinsics dict
-            region_size: Size of region for median depth sampling
+            region_size: Size of region for median depth sampling (no-mask fallback)
+            mask: Optional (H, W) float32 segmentation mask
 
         Returns:
             ([x, y, z] in meters, depth_meters). NaN values if depth invalid.
         """
         h, w = depth_image.shape[:2]
-        half = region_size // 2
+        depth_scale = intrinsics.get("depth_scale", 0.001)
+        fx = intrinsics["fx"]
+        fy = intrinsics["fy"]
+        cx = intrinsics["ppx"]
+        cy = intrinsics["ppy"]
 
-        # Clamp region to image bounds
+        if mask is not None:
+            # Binary mask of object pixels
+            binary = mask > 0.5
+            if binary.any():
+                # Find mask pixel coordinates
+                vs, us = np.nonzero(binary)
+
+                # Mask centroid
+                cu = float(us.mean())
+                cv = float(vs.mean())
+
+                # Gaussian weight: sigma = half the mask extent
+                extent_u = max(float(us.max() - us.min()), 1.0)
+                extent_v = max(float(vs.max() - vs.min()), 1.0)
+                sigma_u = extent_u / 2.0
+                sigma_v = extent_v / 2.0
+
+                weights = np.exp(
+                    -0.5 * (((us - cu) / sigma_u) ** 2 + ((vs - cv) / sigma_v) ** 2)
+                )
+
+                # Get depth values at mask pixels
+                depths = depth_image[vs, us].astype(np.float64)
+
+                # Filter valid depth
+                valid = depths > 0
+                if valid.any():
+                    depths = depths[valid]
+                    weights = weights[valid]
+                    pixel_us = us[valid].astype(np.float64)
+                    pixel_vs = vs[valid].astype(np.float64)
+
+                    # Weighted average depth and pixel position
+                    w_sum = weights.sum()
+                    depth_raw = float(np.dot(weights, depths) / w_sum)
+                    avg_u = float(np.dot(weights, pixel_us) / w_sum)
+                    avg_v = float(np.dot(weights, pixel_vs) / w_sum)
+
+                    depth_m = depth_raw * depth_scale
+                    if 0 < depth_m <= 10.0:
+                        x = (avg_u - cx) * depth_m / fx
+                        y = (avg_v - cy) * depth_m / fy
+                        return [x, y, depth_m], depth_m
+
+        # Fallback: small region around bbox center
+        half = region_size // 2
         u_min = max(0, u - half)
         u_max = min(w, u + half + 1)
         v_min = max(0, v - half)
@@ -744,16 +798,10 @@ class YoloAPI:
             return [float("nan")] * 3, float("nan")
 
         depth_raw = float(np.median(valid))
-        depth_scale = intrinsics.get("depth_scale", 0.001)
         depth_m = depth_raw * depth_scale
 
         if depth_m <= 0 or depth_m > 10.0:
             return [float("nan")] * 3, float("nan")
-
-        fx = intrinsics["fx"]
-        fy = intrinsics["fy"]
-        cx = intrinsics["ppx"]
-        cy = intrinsics["ppy"]
 
         x = (u - cx) * depth_m / fx
         y = (v - cy) * depth_m / fy
@@ -770,21 +818,22 @@ class YoloAPI:
         confidence: float = 0.3,
         save_visualization: bool = True,
         depth_region_size: int = 5,
-        mask_format: str = "none",
+        mask_format: str = "npz",
     ) -> SegmentationResult3D:
         """Segment objects and project to 3D using depth.
 
         Fetches color + depth frames from the camera, runs YOLO segmentation
-        on the color frame, then projects each detection's bbox center to 3D
-        using depth and camera intrinsics.
+        on the color frame, then projects each detection to 3D using the
+        segmentation mask with center-weighted depth averaging.  Falls back
+        to bbox-center sampling when masks are unavailable.
 
         Args:
             text_prompt: Comma-separated object names to detect (e.g. "person, cup")
             camera_id: Specific camera device ID, or None for default camera
             confidence: Minimum detection confidence 0.0-1.0 (default: 0.3)
             save_visualization: Whether to save annotated image (default: True)
-            depth_region_size: Pixel region for median depth sampling (default: 5)
-            mask_format: Segmentation mask format — "npz", "raw", or "none" (default)
+            depth_region_size: Pixel region for median depth sampling (fallback, default: 5)
+            mask_format: Segmentation mask format — "npz", "raw", or "none" (default: "npz")
 
         Returns:
             SegmentationResult3D with 3D positions for each detection.
@@ -834,7 +883,8 @@ class YoloAPI:
             v = int((y1 + y2) / 2)
 
             position_3d, depth_m = self._pixel_to_3d(
-                u, v, depth_image, intrinsics, depth_region_size
+                u, v, depth_image, intrinsics, depth_region_size,
+                mask=det.mask,
             )
 
             if np.isnan(depth_m):

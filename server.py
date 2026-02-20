@@ -91,6 +91,15 @@ def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> F
         base_y_max=cfg.safety.base_workspace_max[1],
     )
 
+    # Workspace teacher (hull boundary from physical teaching)
+    from workspace_teacher import WorkspaceTeacher
+    workspace_teacher = WorkspaceTeacher(
+        state_fn=lambda: state_agg.state,
+        workspace_bounds=workspace_bounds,
+        save_path=os.path.join(_SERVER_DIR, "workspace_bounds.json"),
+    )
+    workspace_teacher.load_bounds()  # Restore saved hull before orchestrator uses bounds
+
     # Rewind orchestrator (replaces RewindManager + SafetyMonitor)
     rewind_config = RewindConfig(
         rewind_base=True,
@@ -154,13 +163,16 @@ def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> F
 
     app.include_router(state_router(state_agg, camera_backend, lease_mgr, base_backend, franka_backend, gripper_backend, mocap_backend, system_logger))
     app.include_router(lease_router(lease_mgr))
-    app.include_router(rewind_router(rewind_orchestrator, lease_mgr, system_logger, safety_monitor, arm_monitor))
+    app.include_router(rewind_router(rewind_orchestrator, lease_mgr, system_logger, safety_monitor, arm_monitor, state_agg=state_agg))
     app.include_router(ws_router(state_agg, cfg, camera_backend, key_store=key_store))
     app.include_router(init_code_routes(lease_mgr, camera_backend))
     app.include_router(sdk_docs_router)
     app.include_router(system_guide_router)
     app.include_router(yolo_router)
     app.include_router(display_router(display, key_store=key_store))
+
+    from routes.workspace_routes import create_router as workspace_router
+    app.include_router(workspace_router(workspace_teacher))
 
     # Service manager routes (includes dashboard)
     if cfg.dashboard:
