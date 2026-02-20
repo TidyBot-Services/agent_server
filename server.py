@@ -102,6 +102,7 @@ def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> F
         base_backend=base_backend,
         arm_backend=franka_backend,
         gripper_backend=gripper_backend,
+        mocap_backend=mocap_backend,
     )
 
     # Safety monitor (collision detection + boundary violations)

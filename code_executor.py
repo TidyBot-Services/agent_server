@@ -678,7 +678,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from backends.franka import FrankaBackend
 from backends.base import BaseBackend
 from backends.gripper import GripperBackend
-from config import FrankaBackendConfig, BaseBackendConfig, GripperBackendConfig, TimingConfig
+from backends.mocap import MocapBackend
+from config import FrankaBackendConfig, BaseBackendConfig, GripperBackendConfig, MocapBackendConfig, TimingConfig
 from robot_sdk import ArmAPI, BaseAPI, GripperAPI, SensorAPI, YoloAPI
 
 timing = TimingConfig()
@@ -708,10 +709,16 @@ gripper_config = GripperBackendConfig(
     state_port=5571,
 )
 
+mocap_config = MocapBackendConfig(
+    host=os.getenv("MOCAP_IP", "localhost"),
+    pub_port=5590,
+)
+
 # Create backends
 franka_backend = FrankaBackend(franka_config, dry_run=dry_run)
 base_backend = BaseBackend(base_config, dry_run=dry_run)
 gripper_backend = GripperBackend(gripper_config, dry_run=dry_run)
+mocap_backend = MocapBackend(mocap_config, dry_run=dry_run)
 
 # Connect to backends (gracefully handle unavailable ones)
 async def init_backends():
@@ -736,6 +743,13 @@ async def init_backends():
     except Exception as e:
         print(f"[SDK] WARNING: Gripper backend unavailable: {{e}}")
 
+    # Mocap - optional
+    try:
+        await mocap_backend.connect()
+        print("[SDK] Mocap backend connected")
+    except Exception as e:
+        print(f"[SDK] WARNING: Mocap backend unavailable: {{e}}")
+
 asyncio.run(init_backends())
 
 # Initialize SDK global instances
@@ -750,16 +764,18 @@ robot_sdk.arm = ArmAPI(
 )
 robot_sdk.base = BaseAPI(
     base_backend,
+    mocap_backend=mocap_backend,
     timeout=timing.base_timeout_s,
     position_tolerance_m=timing.base_position_tolerance_m,
     angle_tolerance_rad=timing.base_angle_tolerance_rad,
 )
 robot_sdk.gripper = GripperAPI(gripper_backend)
-robot_sdk.sensors = SensorAPI(franka_backend, base_backend, gripper_backend)
 
 # Initialize rewind API (uses HTTP calls to agent server)
 from robot_sdk.rewind import RewindAPI
 server_url = os.getenv("ROBOT_SERVER_URL", "http://localhost:8080")
+
+robot_sdk.sensors = SensorAPI(franka_backend, base_backend, gripper_backend, agent_server_url=server_url, mocap_backend=mocap_backend)
 lease_id = os.getenv("ROBOT_LEASE_ID")
 robot_sdk.rewind = RewindAPI(server_url=server_url, lease_id=lease_id)
 print(f"[SDK] Rewind API initialized (server: {{server_url}})")
@@ -804,6 +820,7 @@ async def cleanup():
     await franka_backend.disconnect()
     await base_backend.disconnect()
     await gripper_backend.disconnect()
+    await mocap_backend.disconnect()
 
 asyncio.run(cleanup())
 '''

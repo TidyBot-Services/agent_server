@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import os
+import urllib.request
+import urllib.error
 from typing import Optional
 from backends.franka import FrankaBackend
 from backends.base import BaseBackend, BaseBackendError
@@ -42,10 +46,14 @@ class SensorAPI:
         arm_backend: FrankaBackend,
         base_backend: BaseBackend,
         gripper_backend: GripperBackend,
+        agent_server_url: str = "http://localhost:8080",
+        mocap_backend=None,
     ) -> None:
         self._arm = arm_backend
         self._base = base_backend
         self._gripper = gripper_backend
+        self._agent_url = agent_server_url.rstrip("/")
+        self._mocap = mocap_backend
 
     def get_arm_joints(self) -> list[float]:
         """Get current arm joint positions.
@@ -114,6 +122,34 @@ class SensorAPI:
         pose = state.get("base_pose", [0.0, 0.0, 0.0])
         return tuple(pose)  # type: ignore
 
+    def get_mocap_pose(self) -> Optional[tuple[float, float, float]]:
+        """Get current mocap pose if tracking.
+
+        Returns:
+            Tuple of (x, y, theta) from motion capture, or None if mocap
+            is unavailable or not tracking.
+
+        Example:
+            pose = sensors.get_mocap_pose()
+            if pose is not None:
+                x, y, theta = pose
+                print(f"Mocap: x={x:.3f}, y={y:.3f}, theta={theta:.3f}")
+            else:
+                print("Mocap not tracking")
+        """
+        if self._mocap is None:
+            return None
+        try:
+            state = self._mocap.get_state()
+        except Exception:
+            return None
+        if not state.get("tracking_valid", False):
+            return None
+        pose = state.get("mocap_pose")
+        if pose is None:
+            return None
+        return tuple(pose)  # type: ignore
+
     def get_gripper_position(self) -> int:
         """Get current gripper position.
 
@@ -167,3 +203,206 @@ class SensorAPI:
             }
         except BaseBackendError as e:
             raise SensorError(f"Failed to read robot state: {e}") from e
+
+    # -- Camera methods ------------------------------------------------------
+
+    def _camera_headers(self) -> dict:
+        """Return headers for agent server requests (includes API key if set)."""
+        headers = {}
+        api_key = os.getenv("ROBOT_API_KEY")
+        if api_key:
+            headers["X-API-Key"] = api_key
+        return headers
+
+    def get_camera_frame(self, device_id: Optional[str] = None) -> bytes:
+        """Get a color frame from a camera as JPEG bytes.
+
+        Args:
+            device_id: Camera device ID (e.g. '309622300814'), or None for first available.
+
+        Returns:
+            JPEG image bytes.
+
+        Raises:
+            SensorError: If camera is unavailable or no frame available.
+
+        Example:
+            frame = sensors.get_camera_frame()
+            print(f"Got {len(frame)} bytes")
+
+            # Pass to a service client
+            from service_clients.grounded_sam2.client import GroundedSAM2Client
+            client = GroundedSAM2Client()
+            detections = client.detect(frame, prompts=['cup'])
+        """
+        cam = device_id or "any"
+        url = f"{self._agent_url}/cameras/{cam}/frame"
+        try:
+            req = urllib.request.Request(url, headers=self._camera_headers())
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status != 200:
+                    raise SensorError(f"Camera returned status {resp.status}")
+                return resp.read()
+        except urllib.error.HTTPError as e:
+            raise SensorError(f"Failed to get camera frame: HTTP {e.code}") from e
+        except urllib.error.URLError as e:
+            raise SensorError(f"Camera server unavailable: {e.reason}") from e
+
+    def get_depth_frame(self, device_id: Optional[str] = None) -> bytes:
+        """Get a depth frame from a camera as PNG bytes (uint16).
+
+        Args:
+            device_id: Camera device ID, or None for first available.
+
+        Returns:
+            PNG image bytes (uint16 depth values).
+
+        Raises:
+            SensorError: If camera is unavailable or no frame available.
+
+        Example:
+            import cv2, numpy as np
+            png_bytes = sensors.get_depth_frame()
+            depth = cv2.imdecode(np.frombuffer(png_bytes, np.uint8), cv2.IMREAD_UNCHANGED)
+            print(f"Depth shape: {depth.shape}")
+        """
+        cam = device_id or "any"
+        url = f"{self._agent_url}/cameras/{cam}/frame?stream=depth"
+        try:
+            req = urllib.request.Request(url, headers=self._camera_headers())
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status != 200:
+                    raise SensorError(f"Depth frame returned status {resp.status}")
+                return resp.read()
+        except urllib.error.HTTPError as e:
+            raise SensorError(f"Failed to get depth frame: HTTP {e.code}") from e
+        except urllib.error.URLError as e:
+            raise SensorError(f"Camera server unavailable: {e.reason}") from e
+
+    def get_camera_intrinsics(self, device_id: Optional[str] = None) -> dict:
+        """Get camera intrinsics (focal length, principal point, depth scale).
+
+        Args:
+            device_id: Camera device ID, or None for first available.
+
+        Returns:
+            Dict with keys: fx, fy, ppx, ppy, width, height, depth_scale, ...
+
+        Raises:
+            SensorError: If intrinsics are unavailable.
+
+        Example:
+            intr = sensors.get_camera_intrinsics()
+            print(f"Focal length: ({intr['fx']}, {intr['fy']})")
+        """
+        cam = device_id or "any"
+        url = f"{self._agent_url}/cameras/{cam}/intrinsics"
+        try:
+            req = urllib.request.Request(url, headers=self._camera_headers())
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status != 200:
+                    raise SensorError(f"Intrinsics returned status {resp.status}")
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            raise SensorError(f"Failed to get intrinsics: HTTP {e.code}") from e
+        except urllib.error.URLError as e:
+            raise SensorError(f"Camera server unavailable: {e.reason}") from e
+
+    # -- Stereo IR methods ---------------------------------------------------
+
+    def get_infrared_frame(self, side: str = "left", device_id: Optional[str] = None) -> bytes:
+        """Get an infrared frame from a stereo camera as JPEG bytes.
+
+        RealSense cameras have two IR sensors (left and right) that form a
+        stereo pair. Use this to get a single IR image.
+
+        Args:
+            side: "left" or "right" IR sensor.
+            device_id: Camera device ID, or None for first available.
+
+        Returns:
+            JPEG image bytes (grayscale IR).
+
+        Raises:
+            SensorError: If camera is unavailable or IR stream not enabled.
+
+        Example:
+            left_ir = sensors.get_infrared_frame("left")
+            right_ir = sensors.get_infrared_frame("right")
+        """
+        if side not in ("left", "right"):
+            raise SensorError(f"Invalid side '{side}', must be 'left' or 'right'")
+        cam = device_id or "any"
+        url = f"{self._agent_url}/cameras/{cam}/frame?stream=infrared_{side}"
+        try:
+            req = urllib.request.Request(url, headers=self._camera_headers())
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status != 200:
+                    raise SensorError(f"IR frame returned status {resp.status}")
+                return resp.read()
+        except urllib.error.HTTPError as e:
+            raise SensorError(f"Failed to get IR frame: HTTP {e.code}") from e
+        except urllib.error.URLError as e:
+            raise SensorError(f"Camera server unavailable: {e.reason}") from e
+
+    def get_stereo_pair(self, device_id: Optional[str] = None) -> tuple[bytes, bytes]:
+        """Get a stereo image pair (left and right IR) as JPEG bytes.
+
+        Convenience method that fetches both IR frames. Useful for stereo
+        depth estimation services like FoundationStereo.
+
+        Args:
+            device_id: Camera device ID, or None for first available.
+
+        Returns:
+            Tuple of (left_jpeg, right_jpeg) - both as JPEG bytes.
+
+        Raises:
+            SensorError: If camera is unavailable or IR streams not enabled.
+
+        Example:
+            left, right = sensors.get_stereo_pair()
+            print(f"Left: {len(left)} bytes, Right: {len(right)} bytes")
+
+            # Pass to FoundationStereo
+            from service_clients.foundation_stereo.client import FoundationStereoClient
+            client = FoundationStereoClient()
+            depth = client.estimate_depth(left, right)
+        """
+        left = self.get_infrared_frame("left", device_id)
+        right = self.get_infrared_frame("right", device_id)
+        return left, right
+
+    def get_ir_intrinsics(self, side: str = "left", device_id: Optional[str] = None) -> dict:
+        """Get IR camera intrinsics for stereo calibration.
+
+        Each IR sensor has its own intrinsics (focal length, principal point).
+
+        Args:
+            side: "left" or "right" IR sensor.
+            device_id: Camera device ID, or None for first available.
+
+        Returns:
+            Dict with keys: fx, fy, ppx, ppy, width, height, model, coeffs, ...
+
+        Raises:
+            SensorError: If intrinsics are unavailable.
+
+        Example:
+            left_intr = sensors.get_ir_intrinsics("left")
+            print(f"IR focal length: ({left_intr['fx']}, {left_intr['fy']})")
+        """
+        if side not in ("left", "right"):
+            raise SensorError(f"Invalid side '{side}', must be 'left' or 'right'")
+        cam = device_id or "any"
+        url = f"{self._agent_url}/cameras/{cam}/intrinsics?stream=infrared_{side}"
+        try:
+            req = urllib.request.Request(url, headers=self._camera_headers())
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status != 200:
+                    raise SensorError(f"IR intrinsics returned status {resp.status}")
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            raise SensorError(f"Failed to get IR intrinsics: HTTP {e.code}") from e
+        except urllib.error.URLError as e:
+            raise SensorError(f"Camera server unavailable: {e.reason}") from e
