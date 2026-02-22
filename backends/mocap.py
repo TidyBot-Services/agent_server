@@ -41,10 +41,22 @@ class MocapBackend:
         self._socket = self._ctx.socket(zmq.SUB)
         self._socket.setsockopt(zmq.SUBSCRIBE, b"")
         self._socket.setsockopt(zmq.CONFLATE, 1)  # keep only latest message
-        self._socket.setsockopt(zmq.RCVTIMEO, 0)  # non-blocking
         addr = f"tcp://{self._cfg.host}:{self._cfg.pub_port}"
         self._socket.connect(addr)
         logger.info("MocapBackend: connected to %s", addr)
+
+        # Prime the socket: wait for the first message so get_state()
+        # doesn't return {} on the first call (ZMQ SUB startup race).
+        self._socket.setsockopt(zmq.RCVTIMEO, 500)  # 500ms blocking timeout
+        try:
+            raw = self._socket.recv_string()
+            self._last_msg = json.loads(raw)
+            self._last_recv_time = time.time()
+            logger.info("MocapBackend: primed (tracking_valid=%s)", self._last_msg.get("valid"))
+        except zmq.Again:
+            logger.warning("MocapBackend: no message within 500ms, mocap may not be publishing")
+        finally:
+            self._socket.setsockopt(zmq.RCVTIMEO, 0)  # back to non-blocking
 
     async def disconnect(self) -> None:
         if self._socket is not None:
