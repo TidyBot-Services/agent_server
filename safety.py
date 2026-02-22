@@ -1,4 +1,9 @@
-"""Safety envelope checks — validates commands before forwarding."""
+"""Safety envelope checks — validates commands before forwarding.
+
+DEPRECATED: This module is not actively used. Safety is handled by:
+- SafetyMonitor (safety_monitor.py): background boundary + collision detection
+- WorkspaceBounds (system_logger config): convex hull boundary checks
+"""
 
 from __future__ import annotations
 
@@ -17,7 +22,7 @@ class SafetyResult:
     detail: str = ""
 
 
-class SafetyEnvelope:
+class SafetyEnvelope:  # DEPRECATED — not wired into any command path
     def __init__(self, config: SafetyConfig) -> None:
         self._cfg = config
 
