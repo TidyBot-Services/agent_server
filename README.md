@@ -104,7 +104,7 @@ When using `--auto-start-services`, the server manages these backend processes:
 
 Dependencies are enforced: `franka_server` won't start without `unlock`, and auto-stops if `unlock` goes down. Health checks run every 5 seconds. Last 100 lines of logs are kept per service.
 
-> **Note:** The service manager's polling can interfere with backend services. For production, prefer managing services externally with `start_robot.sh` and running the server with `--no-service-manager`.
+> **Note:** The service manager's polling can interfere with backend services. For production, prefer managing services externally (e.g. via `tidybot_army/start_robot.sh`) and running the server with `--no-service-manager`.
 
 ## Network ports
 
@@ -182,5 +182,5 @@ python3 server.py [OPTIONS]
   --port PORT              Port number (default: 8080)
   --dry-run                Simulated backends, no hardware
   --auto-start-services    Manage backend processes (experimental)
-  --no-service-manager     Disable service management (use with start_robot.sh)
+  --no-service-manager     Disable service management (use when services are managed externally)
 ```

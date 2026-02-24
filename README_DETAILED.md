@@ -108,9 +108,7 @@ base.move_delta(dx=0.5, dy=0.2, frame="global")   # Relative move
 
 # Convenience methods
 base.forward(0.5)                                   # Forward 0.5m
-base.backward(0.3)                                  # Backward 0.3m
-base.left(0.2)                                      # Strafe left 0.2m
-base.right(0.2)                                     # Strafe right 0.2m
+base.forward(-0.3)                                  # Backward 0.3m
 base.rotate_degrees(90)                             # Rotate 90° CCW
 base.rotate_degrees(-45)                            # Rotate 45° CW
 
@@ -192,9 +190,27 @@ display.clear()                               # Clear display
 ```python
 from robot_sdk import yolo
 
-detections = yolo.detect()                         # Detect objects in current camera view
-detections = yolo.detect(confidence=0.5)           # With confidence threshold
-objects = yolo.detect_and_describe()               # Detect + text descriptions
+# Segment objects in current camera view
+result = yolo.segment_camera("cup, bottle, table")
+for det in result.detections:
+    print(f"{det.class_name}: {det.confidence:.2f}, bbox={det.bbox}")
+
+# Filter by class
+cups = result.get_by_class("cup")
+print(f"Found {len(cups)} cups")
+
+# With segmentation masks
+result = yolo.segment_camera("cup", mask_format="npz")
+cup_mask = result.get_mask_for("cup")              # (H, W) float32
+
+# Segment a provided image array
+result = yolo.segment_image(image, "person, chair")
+
+# 3D projection (uses depth camera)
+result = yolo.segment_camera_3d("person")
+for det in result.detections:
+    print(f"{det.class_name} at {det.position_3d}")  # [x,y,z] meters
+closest = result.get_closest("person")               # nearest detection
 ```
 
 ## API Reference
