@@ -80,9 +80,8 @@ Submit Python code that runs in a subprocess with access to a rich SDK.
 | `GET /code/sdk` | GET | **Auto-generated SDK documentation (JSON)** |
 | `GET /code/sdk/markdown` | GET | SDK documentation as markdown |
 | `GET /code/recordings` | GET | List all execution IDs with recordings |
-| `GET /code/recordings/{id}` | GET | Get recording metadata (frames + state log) |
+| `GET /code/recordings/{id}` | GET | Recording timeline: frames matched with nearest state by timestamp |
 | `GET /code/recordings/{id}/frames/{filename}` | GET | Serve a recorded JPEG frame |
-| `GET /code/recordings/{id}/state_log` | GET | State log as JSONL (arm, base, gripper at 10 Hz) |
 
 **Request format (`POST /code/execute`):**
 ```json

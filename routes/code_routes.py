@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
@@ -334,11 +335,14 @@ def init_code_routes(lease_manager: LeaseManager, camera_backend: CameraBackend,
 
     @router.get("/recordings/{execution_id}")
     async def get_recording(execution_id: str):
-        """Get recording metadata for an execution.
+        """Get recording metadata with frames matched to nearest state.
 
-        Returns frame list, timestamps, camera info.
-        No lease required (read-only).
+        Each entry in the ``timeline`` array pairs a frame with the
+        closest state sample by timestamp.  No lease required (read-only).
         """
+        import bisect
+        from execution_recorder import _CODE_DIR
+
         recorder = get_recorder()
         metadata = recorder.get_recording(execution_id)
         if metadata is None:
@@ -346,7 +350,51 @@ def init_code_routes(lease_manager: LeaseManager, camera_backend: CameraBackend,
                 {"error": f"No recording found for execution {execution_id}"},
                 status_code=404,
             )
-        return metadata
+
+        # Load state log timestamps for matching
+        state_log_path = _CODE_DIR / execution_id / "state_log.jsonl"
+        state_times: list[float] = []
+        state_lines: list[dict] = []
+        if state_log_path.exists():
+            for line in state_log_path.read_text().splitlines():
+                if not line.strip():
+                    continue
+                entry = json.loads(line)
+                state_times.append(entry.get("timestamp", 0.0))
+                state_lines.append(entry)
+
+        # Build timeline: match each frame to nearest state
+        timeline = []
+        timestamps = metadata.get("timestamps", [])
+        frames = metadata.get("frames", [])
+        for i, (frame, t) in enumerate(zip(frames, timestamps)):
+            matched_state = None
+            if state_times:
+                idx = bisect.bisect_left(state_times, t)
+                # Pick whichever neighbor is closer
+                best = None
+                if idx < len(state_times):
+                    best = idx
+                if idx > 0 and (best is None or abs(state_times[idx - 1] - t) <= abs(state_times[best] - t)):
+                    best = idx - 1
+                if best is not None:
+                    matched_state = state_lines[best]
+            timeline.append({
+                "frame": frame,
+                "timestamp": t,
+                "state": matched_state,
+            })
+
+        return {
+            "execution_id": metadata.get("execution_id"),
+            "started_at": metadata.get("started_at"),
+            "stopped_at": metadata.get("stopped_at"),
+            "duration": metadata.get("duration"),
+            "cameras": metadata.get("cameras", []),
+            "frame_count": metadata.get("frame_count", 0),
+            "state_samples": metadata.get("state_samples", 0),
+            "timeline": timeline,
+        }
 
     @router.get("/recordings/{execution_id}/frames/{filename}")
     async def get_recording_frame(execution_id: str, filename: str):
@@ -369,25 +417,6 @@ def init_code_routes(lease_manager: LeaseManager, camera_backend: CameraBackend,
         return Response(
             content=filepath.read_bytes(),
             media_type="image/jpeg",
-            headers={"Cache-Control": "public, max-age=86400"},
-        )
-
-    @router.get("/recordings/{execution_id}/state_log")
-    async def get_recording_state_log(execution_id: str):
-        """Serve the state log JSONL file for an execution.
-
-        No lease required (read-only).
-        """
-        from pathlib import Path
-        from execution_recorder import _CODE_DIR
-
-        state_path = _CODE_DIR / execution_id / "state_log.jsonl"
-        if not state_path.exists():
-            raise HTTPException(status_code=404, detail="State log not found")
-
-        return Response(
-            content=state_path.read_bytes(),
-            media_type="application/x-ndjson",
             headers={"Cache-Control": "public, max-age=86400"},
         )
 

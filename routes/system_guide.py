@@ -309,31 +309,17 @@ def generate_guide(app=None) -> dict:
                         ),
                     },
                     {
-                        "name": "Recorded frames (preferred over live camera)",
+                        "name": "Execution recordings (preferred over live camera)",
                         "description": (
-                            "Camera frames are automatically recorded at 0.5 Hz "
-                            "during every code execution. After execution, retrieve "
-                            "them via `GET /code/recordings/{execution_id}` (metadata "
-                            "including a `frames` list of all filenames) "
-                            "and `GET /code/recordings/{execution_id}/frames/{filename}` "
-                            "(JPEG). Filenames follow the pattern "
-                            "`{NNNN}_{camera_name}.jpg` (zero-padded 4-digit index "
-                            "+ camera name, e.g. `0000_wrist_cam.jpg`, `0001_base_front.jpg`). "
+                            "Camera frames (0.5 Hz) and robot state (10 Hz) are "
+                            "automatically recorded during every code execution. "
+                            "`GET /code/recordings/{execution_id}` returns a "
+                            "`timeline` array where each entry has a `frame` "
+                            "filename, `timestamp`, and `state` (the nearest "
+                            "state sample matched by time — arm joints, EE pose, "
+                            "base pose, gripper). Retrieve frame images via "
+                            "`GET /code/recordings/{execution_id}/frames/{filename}`. "
                             "This avoids vision token cost from live polling."
-                        ),
-                    },
-                    {
-                        "name": "Recorded state log",
-                        "description": (
-                            "Robot state (arm joints, EE pose, base pose, gripper) "
-                            "is recorded at 10 Hz during every code execution as "
-                            "JSONL (one JSON object per line). Retrieve via "
-                            "`GET /code/recordings/{execution_id}/state_log` "
-                            "(application/x-ndjson). Each line has `timestamp`, "
-                            "`arm` (q, dq, ee_pose), `base` (pose), `gripper` "
-                            "(position, object_detected). The recording metadata "
-                            "(`GET /code/recordings/{execution_id}`) includes "
-                            "`state_samples` count and `state_interval`."
                         ),
                     },
                     {
@@ -375,10 +361,9 @@ def generate_guide(app=None) -> dict:
                     {"method": "GET", "path": "/cameras/{device_id}/frame", "description": "Get a camera frame (JPEG)"},
                     {"method": "WS", "path": "/ws/state", "description": "Streaming robot state"},
                     {"method": "WS", "path": "/ws/cameras", "description": "Streaming camera feeds"},
-                    {"method": "GET", "path": "/code/recordings", "description": "List execution IDs with recorded frames and state logs"},
-                    {"method": "GET", "path": "/code/recordings/{execution_id}", "description": "Recording metadata (frames, state log, timestamps)"},
+                    {"method": "GET", "path": "/code/recordings", "description": "List execution IDs with recordings"},
+                    {"method": "GET", "path": "/code/recordings/{execution_id}", "description": "Recording timeline: frames matched with nearest state by timestamp"},
                     {"method": "GET", "path": "/code/recordings/{execution_id}/frames/{filename}", "description": "Retrieve a recorded JPEG frame"},
-                    {"method": "GET", "path": "/code/recordings/{execution_id}/state_log", "description": "State log as JSONL (arm, base, gripper at 10 Hz)"},
                 ],
             },
             "display": {
