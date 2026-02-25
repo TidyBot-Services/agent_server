@@ -230,10 +230,10 @@ class SensorAPI:
             frame = sensors.get_camera_frame()
             print(f"Got {len(frame)} bytes")
 
-            # Pass to a service client
-            from service_clients.grounded_sam2.client import GroundedSAM2Client
-            client = GroundedSAM2Client()
-            detections = client.detect(frame, prompts=['cup'])
+            # Use with YOLO for object detection
+            result = yolo.segment_camera("cup, bottle")
+            for det in result.detections:
+                print(f"{det.class_name}: {det.confidence:.2f}")
         """
         cam = device_id or "any"
         url = f"{self._agent_url}/cameras/{cam}/frame"
@@ -364,10 +364,9 @@ class SensorAPI:
             left, right = sensors.get_stereo_pair()
             print(f"Left: {len(left)} bytes, Right: {len(right)} bytes")
 
-            # Pass to FoundationStereo
-            from service_clients.foundation_stereo.client import FoundationStereoClient
-            client = FoundationStereoClient()
-            depth = client.estimate_depth(left, right)
+            # Use with a depth estimation service
+            # Deploy foundation-stereo-service via deploy-agent first
+            print(f"Left: {len(left)} bytes, Right: {len(right)} bytes")
         """
         left = self.get_infrared_frame("left", device_id)
         right = self.get_infrared_frame("right", device_id)

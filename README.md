@@ -22,7 +22,7 @@ Built on FastAPI. Runs on the robot's onboard computer. Talks to hardware over Z
                   Arm      Base       2F-85    D405/D435
 ```
 
-This repo is part of [TidyBot-Services](https://github.com/TidyBot-Services) — shared infrastructure for the TidyBot fleet. Skills that run on this server live in [TidyBot-Skills](https://github.com/TidyBot-Skills) — things like [pick-up-object](https://github.com/TidyBot-Skills/pick-up-object), [arm-sweep](https://github.com/TidyBot-Skills/arm-sweep), and [count-people-in-room](https://github.com/TidyBot-Skills/count-people-in-room).
+This repo is part of [TidyBot-Services](https://github.com/TidyBot-Services) — shared infrastructure for the TidyBot fleet. Skills that run on this server live in [tidybot-skills](https://github.com/tidybot-skills) — things like [pick-up-object](https://github.com/tidybot-skills/pick-up-object), [arm-sweep](https://github.com/tidybot-skills/arm-sweep), and [count-people-in-room](https://github.com/tidybot-skills/count-people-in-room).
 
 > **Looking for the full API and SDK docs?** See [README_DETAILED.md](README_DETAILED.md) for the complete SDK reference, API tables, response schemas, and working examples.
 
@@ -105,6 +105,24 @@ When using `--auto-start-services`, the server manages these backend processes:
 Dependencies are enforced: `franka_server` won't start without `unlock`, and auto-stops if `unlock` goes down. Health checks run every 5 seconds. Last 100 lines of logs are kept per service.
 
 > **Note:** The service manager's polling can interfere with backend services. For production, prefer managing services externally (e.g. via `tidybot_army/start_robot.sh`) and running the server with `--no-service-manager`.
+
+## External GPU services
+
+Some SDK modules (like `yolo`) depend on external GPU services running on compute nodes. These are managed by the **deploy-agent** — a lightweight HTTP daemon on each compute node.
+
+```bash
+# Check what services are running on a compute node
+curl http://<compute-node>:9000/services
+
+# Deploy a service if not running
+curl -X POST http://<compute-node>:9000/deploy \
+  -H "Content-Type: application/json" \
+  -d '{"name": "yolo-service", "image": "tidybot/yolo-service:0.2.0", "port": 8010, "gpu": true, "vram_gb": 8}'
+```
+
+Set `YOLO_SERVER_URL` to point the YOLO SDK module at the running service. Set `COMPUTE_NODES` to list known compute nodes.
+
+See the [Tidybot-Universe](https://github.com/TidyBot-Services/Tidybot-Universe) repo for deploy-agent setup and service manifest specs.
 
 ## Network ports
 

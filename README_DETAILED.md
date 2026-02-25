@@ -187,6 +187,8 @@ display.clear()                               # Clear display
 
 ### yolo
 
+> **Requires:** An external YOLO service running on a compute node. Set `YOLO_SERVER_URL` env var to point at it. Deploy via the deploy-agent if not running.
+
 ```python
 from robot_sdk import yolo
 

@@ -410,6 +410,36 @@ def generate_guide(app=None) -> dict:
                     "display.show_image(), display.show_plot(), display.clear()"
                 ),
             },
+            "external_services": {
+                "title": "External GPU Services",
+                "description": (
+                    "Some SDK modules (like yolo) depend on external GPU services "
+                    "running on compute nodes. These are Docker containers managed "
+                    "by the deploy-agent — a lightweight HTTP daemon on each "
+                    "compute node (port 9000)."
+                ),
+                "flow": [
+                    "Check what's running: GET http://<compute-node>:9000/services",
+                    "If the service you need isn't running, read its service.yaml from the repo",
+                    "Deploy it: POST http://<compute-node>:9000/deploy with the service.yaml fields",
+                    "The deploy-agent assigns a GPU, starts the container, and returns the endpoint URL",
+                    "Use the service's client.py with the returned URL",
+                ],
+                "env_vars": [
+                    {
+                        "name": "COMPUTE_NODES",
+                        "description": "Comma-separated list of deploy-agent URLs (e.g. http://10.0.0.5:9000)",
+                    },
+                    {
+                        "name": "YOLO_SERVER_URL",
+                        "description": "URL of the YOLO service (e.g. http://10.0.0.5:8010)",
+                    },
+                ],
+                "note": (
+                    "Service images must be built on the compute node first (via SSH). "
+                    "Once built, skill agents can deploy them anytime via the deploy-agent API."
+                ),
+            },
             "workspace_boundary": {
                 "title": "Workspace Boundary",
                 "description": (
@@ -565,6 +595,27 @@ def _render_markdown(guide: dict) -> str:
         md += "\n"
 
         md += f"> {disp['sdk_note']}\n\n"
+
+    # External services section
+    if "external_services" in guide["sections"]:
+        ext = guide["sections"]["external_services"]
+        md += f"## {ext['title']}\n\n"
+        md += f"{ext['description']}\n\n"
+
+        md += "### How to Deploy\n\n"
+        for i, step in enumerate(ext["flow"], 1):
+            md += f"{i}. {step}\n"
+        md += "\n"
+
+        if ext.get("env_vars"):
+            md += "### Environment Variables\n\n"
+            md += "| Variable | Description |\n"
+            md += "|----------|-------------|\n"
+            for ev in ext["env_vars"]:
+                md += f"| `{ev['name']}` | {ev['description']} |\n"
+            md += "\n"
+
+        md += f"> {ext['note']}\n\n"
 
     # Workspace boundary section
     if "workspace_boundary" in guide["sections"]:

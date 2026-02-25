@@ -515,7 +515,7 @@ When `auto_rewind_enabled` is true (via `/rewind/monitor/enable`), the safety mo
 | `routes/sdk_docs.py` | Auto-generated SDK documentation |
 | `routes/system_guide.py` | Auto-generated system guide |
 | `robot_sdk/` | SDK modules (arm, base, gripper, sensors, rewind, yolo, display) |
-| `service_clients/` | Downloaded client SDKs for backend ML services |
+| `service_clients/` | Client SDKs for backend GPU services (YOLO, SAM2, stereo, etc.) |
 | `controllers/` | Python controllers for arm and base |
 | `examples/` | Example scripts (pick_and_place.py, simple_move.py) |
 | `tests/` | All test scripts |
