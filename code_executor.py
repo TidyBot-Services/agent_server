@@ -783,7 +783,7 @@ print(f"[SDK] Rewind API initialized (server: {{server_url}})")
 # Initialize YOLO API (uses HTTP calls to remote YOLO server + agent server cameras)
 from robot_sdk.yolo import YoloAPI
 robot_sdk.yolo = YoloAPI(
-    yolo_server_url="http://158.130.109.188:8010",
+    yolo_server_url=os.getenv("YOLO_SERVER_URL", ""),
     agent_server_url=server_url,
 )
 print("[SDK] YOLO API initialized")

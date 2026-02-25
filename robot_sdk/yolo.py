@@ -283,7 +283,7 @@ class YoloAPI:
 
     def __init__(
         self,
-        yolo_server_url: str = "http://158.130.109.188:8010",
+        yolo_server_url: str = "",
         agent_server_url: str = "http://localhost:8080",
     ) -> None:
         self._yolo_url = yolo_server_url.rstrip("/")
