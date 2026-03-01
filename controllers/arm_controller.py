@@ -36,7 +36,7 @@ import numpy as np
 
 # Add franka_server package to path
 _FRANKA_PKG = os.path.join(
-    os.path.dirname(__file__), "..", "..", "franka_interact", "franka_server"
+    os.path.dirname(__file__), "..", "..", "hardware", "arm_server", "franka_server"
 )
 if os.path.abspath(_FRANKA_PKG) not in sys.path:
     sys.path.insert(0, os.path.abspath(_FRANKA_PKG))

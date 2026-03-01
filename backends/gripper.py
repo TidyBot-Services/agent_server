@@ -32,6 +32,7 @@ class GripperBackend:
             os.path.dirname(__file__),
             "..",
             "..",
+            "hardware",
             "gripper_server",
         )
         if gripper_pkg not in sys.path:

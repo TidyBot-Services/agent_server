@@ -5,5 +5,4 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-source ~/tidybot_army/franka_interact/.venv/bin/activate
 python3 controllers/demo.py "$@"

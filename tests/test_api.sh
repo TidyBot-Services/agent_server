@@ -1,5 +1,5 @@
 #!/bin/bash
-# API test script for tidybot-agent-server
+# API test script for agent-server
 # Usage: ./tests/test_api.sh [--with-gripper]
 
 set -e

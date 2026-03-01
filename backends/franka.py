@@ -40,7 +40,8 @@ class FrankaBackend:
             os.path.dirname(__file__),
             "..",
             "..",
-            "franka_interact",
+            "hardware",
+            "arm_server",
             "franka_server",
         )
         if franka_pkg not in sys.path:

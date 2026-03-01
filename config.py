@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 
-# Root of the tidybot_army project
+# Root of the tidybot_uni project
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -36,48 +36,42 @@ class ServiceManagerConfig:
 
 def default_services() -> dict[str, ServiceDefinition]:
     """Return the default service definitions."""
-    _venv_activate = f"source {os.path.join(_PROJECT_ROOT, 'franka_interact', '.venv', 'bin', 'activate')} && "
     return {
         "unlock": ServiceDefinition(
             name="Robot Unlock",
             cmd="./lock_unlock.sh --unlock --fci --persistent --wait --force",
-            cwd=os.path.join(_PROJECT_ROOT, "franka_interact", "franka_server"),
-            shell_prefix=_venv_activate,
+            cwd=os.path.join(_PROJECT_ROOT, "hardware", "arm_server", "franka_server"),
             kill_patterns=["lock_unlock.sh", "desk_client"],
         ),
         "base_server": ServiceDefinition(
             name="Base Server",
             cmd="python3 -m base_server.server",
-            cwd=os.path.join(_PROJECT_ROOT, "base_server"),
+            cwd=os.path.join(_PROJECT_ROOT, "hardware", "base_server"),
             kill_patterns=["base_server"],
         ),
         "franka_server": ServiceDefinition(
             name="Franka Arm Server",
             cmd="./start_server.sh",
-            cwd=os.path.join(_PROJECT_ROOT, "franka_interact", "franka_server"),
-            shell_prefix=_venv_activate,
+            cwd=os.path.join(_PROJECT_ROOT, "hardware", "arm_server", "franka_server"),
             kill_patterns=["start_server.sh", "franka_server.server"],
             depends_on=["unlock"],
         ),
         "gripper_server": ServiceDefinition(
             name="Gripper Server",
             cmd="python3 -m gripper_server.server",
-            cwd=os.path.join(_PROJECT_ROOT, "gripper_server"),
-            shell_prefix=_venv_activate,
+            cwd=os.path.join(_PROJECT_ROOT, "hardware", "gripper_server"),
             kill_patterns=["gripper_server"],
         ),
         "camera_server": ServiceDefinition(
             name="Camera Server",
             cmd="python3 -m camera_server.server --config cameras.yaml",
-            cwd=os.path.join(_PROJECT_ROOT, "camera_server"),
-            shell_prefix=_venv_activate,
+            cwd=os.path.join(_PROJECT_ROOT, "hardware", "camera_server"),
             kill_patterns=["camera_server.server"],
         ),
         "mocap_server": ServiceDefinition(
             name="Mocap Server",
             cmd="python3 -m mocap_server.server",
-            cwd=os.path.join(_PROJECT_ROOT, "mocap_server"),
-            shell_prefix=_venv_activate,
+            cwd=os.path.join(_PROJECT_ROOT, "hardware", "mocap_server"),
             kill_patterns=["mocap_server"],
         ),
     }
@@ -116,8 +110,6 @@ def camera_server_service(
             cameras=["overhead_cam:987654321"],
         )
     """
-    _venv_activate = f"source {os.path.join(_PROJECT_ROOT, 'franka_interact', '.venv', 'bin', 'activate')} && "
-    
     if config_file:
         cmd = f"python3 -m camera_server.server --config {config_file}"
     elif cameras:
@@ -125,12 +117,11 @@ def camera_server_service(
         cmd = f"python3 -m camera_server.server --port {port} --cameras {cam_args}"
     else:
         cmd = f"python3 -m camera_server.server --port {port}"
-    
+
     return ServiceDefinition(
         name=name,
         cmd=cmd,
-        cwd=os.path.join(_PROJECT_ROOT, "camera_server"),
-        shell_prefix=_venv_activate,
+        cwd=os.path.join(_PROJECT_ROOT, "hardware", "camera_server"),
         kill_patterns=["camera_server.server"],
     )
 

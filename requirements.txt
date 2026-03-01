@@ -5,3 +5,7 @@ numpy>=1.24
 opencv-python>=4.8
 msgpack>=1.0
 websockets>=12.0
+
+# Also required (resolved via sys.path from parent directory, not pip):
+#   system_logger — pip install -e ../system_logger/
+#   logging_config — symlinked from common/ by setup.sh

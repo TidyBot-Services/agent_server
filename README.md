@@ -1,4 +1,4 @@
-# tidybot-agent-server
+# agent-server
 
 The agent server is the central piece of the [TidyBot Universe](https://tidybot-services.github.io/) — it's the glue between AI agents and the physical robot. Agents observe the world through cameras, decide what to do, then submit Python code that moves the arm, drives the base, and operates the gripper. The server handles the messy parts: backend connections, safety envelopes, trajectory recording, and making sure only one operator controls the robot at a time.
 
@@ -6,7 +6,7 @@ Built on FastAPI. Runs on the robot's onboard computer. Talks to hardware over Z
 
 ```
                 ┌─────────────────────────────────────────────────┐
-                │              tidybot-agent-server                │
+                │              agent-server                │
   AI Agent ────►│  ┌──────────┐  ┌───────┐  ┌────────────────┐   │
   (Skills)      │  │  Lease   │  │Safety │  │  Code Executor │   │
                 │  │  Manager │  │Envelope│  │  (robot_sdk)   │   │
@@ -104,7 +104,7 @@ When using `--auto-start-services`, the server manages these backend processes:
 
 Dependencies are enforced: `franka_server` won't start without `unlock`, and auto-stops if `unlock` goes down. Health checks run every 5 seconds. Last 100 lines of logs are kept per service.
 
-> **Note:** The service manager's polling can interfere with backend services. For production, prefer managing services externally (e.g. via `tidybot_army/start_robot.sh`) and running the server with `--no-service-manager`.
+> **Note:** The service manager's polling can interfere with backend services. For production, prefer managing services externally (e.g. via `start_robot.sh`) and running the server with `--no-service-manager`.
 
 ## External GPU services
 

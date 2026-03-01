@@ -850,7 +850,8 @@ asyncio.run(cleanup())
         franka_pkg = os.path.join(
             agent_server_dir,
             "..",
-            "franka_interact",
+            "hardware",
+            "arm_server",
             "franka_server",
         )
         franka_pkg = os.path.abspath(franka_pkg)
@@ -859,6 +860,7 @@ asyncio.run(cleanup())
         gripper_pkg = os.path.join(
             agent_server_dir,
             "..",
+            "hardware",
             "gripper_server",
         )
         gripper_pkg = os.path.abspath(gripper_pkg)

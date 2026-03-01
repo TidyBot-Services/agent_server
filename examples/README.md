@@ -6,16 +6,15 @@ These examples demonstrate how to use the `robot_sdk` for controlling the robot 
 
 ```bash
 # Terminal 1: Start robot services
-cd ~/tidybot_army
+cd ~/tidybot_uni
 ./start_robot.sh --no-controller
 
 # Terminal 2: Start API server
-cd ~/tidybot_army/tidybot-agent-server
-source ~/tidybot_army/franka_interact/.venv/bin/activate
+cd ~/tidybot_uni/agent_server
 python3 server.py --no-service-manager
 
 # Terminal 3: Run example
-cd ~/tidybot_army/tidybot-agent-server
+cd ~/tidybot_uni/agent_server
 tests/test_execution.sh examples/simple_move.py
 ```
 
@@ -280,7 +279,7 @@ except Exception as e:
 Run the test script to verify everything works:
 
 ```bash
-cd ~/tidybot_army/tidybot-agent-server
+cd ~/tidybot_uni/agent_server
 tests/test_execution.sh examples/simple_move.py
 ```
 

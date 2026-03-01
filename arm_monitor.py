@@ -22,8 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Paths
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_FRANKA_SERVER_DIR = os.path.join(_PROJECT_ROOT, "franka_interact", "franka_server")
-_VENV_ACTIVATE = os.path.join(_PROJECT_ROOT, "franka_interact", ".venv", "bin", "activate")
+_FRANKA_SERVER_DIR = os.path.join(_PROJECT_ROOT, "hardware", "arm_server", "franka_server")
 
 # Robot IP (from env or default)
 _ROBOT_IP = os.environ.get("FRANKA_IP", "172.16.0.2")
@@ -342,7 +341,7 @@ class ArmMonitor:
         try:
             proc = await asyncio.create_subprocess_exec(
                 "bash", "-c",
-                f"source {_VENV_ACTIVATE} && python3 -m franka_server.recover --ip {self._robot_ip}",
+                f"python3 -m franka_server.recover --ip {self._robot_ip}",
                 cwd=_FRANKA_SERVER_DIR,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -409,7 +408,7 @@ class ArmMonitor:
         try:
             proc = await asyncio.create_subprocess_exec(
                 "bash", "-c",
-                f"source {_VENV_ACTIVATE} && exec bash ./start_server.sh --ip {self._robot_ip}",
+                f"exec bash ./start_server.sh --ip {self._robot_ip}",
                 cwd=_FRANKA_SERVER_DIR,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,

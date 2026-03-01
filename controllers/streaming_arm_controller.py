@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Streaming arm controller based on franka_interact examples.
+"""Streaming arm controller based on arm_server examples.
 
 Commands must be streamed at ~100Hz. Single commands timeout after 100ms.
 
@@ -27,7 +27,8 @@ import time
 import numpy as np
 
 # Add franka_server to path
-sys.path.insert(0, '/home/tidybot/tidybot_army/franka_interact/franka_server')
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'hardware', 'arm_server', 'franka_server'))
 
 from franka_server import (
     FrankaClient,

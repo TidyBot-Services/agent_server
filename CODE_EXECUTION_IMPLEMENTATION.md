@@ -194,7 +194,7 @@ except ArmError as e:
 ### Unit Testing (Dry-Run Mode)
 
 ```bash
-cd ~/tidybot_army/tidybot-agent-server
+cd ~/tidybot_uni/agent_server
 
 # Start server in dry-run mode
 python3 server.py --dry-run --no-service-manager
@@ -208,12 +208,11 @@ cd examples
 
 ```bash
 # Terminal 1: Start robot services
-cd ~/tidybot_army
+cd ~/tidybot_uni
 ./start_robot.sh --no-controller
 
 # Terminal 2: Start agent server
-cd ~/tidybot_army/tidybot-agent-server
-source ~/tidybot_army/franka_interact/.venv/bin/activate
+cd ~/tidybot_uni/agent_server
 python3 server.py --no-service-manager
 
 # Terminal 3: Submit code

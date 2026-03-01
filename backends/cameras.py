@@ -11,7 +11,7 @@ from typing import Optional, Dict, List, Any
 
 # Add camera_server to path
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'camera_server'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'hardware', 'camera_server'))
 
 try:
     from camera_server.client import CameraClient, DecodedFrame

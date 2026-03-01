@@ -4,7 +4,7 @@
 Usage:
     python3 -m controllers.demo
 
-Or from the tidybot-agent-server directory:
+Or from the agent_server directory:
     python3 controllers/demo.py
 
 Commands:

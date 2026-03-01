@@ -1,13 +1,13 @@
-# Tidybot Agent Server
+# Agent Server
 
 FastAPI hardware server that AI agents use to control the robot. Unified API for arm + base + gripper commands, cameras, mocap.
 
 ```
-Agent ──► tidybot-agent-server ──► base_server.py   (mobile base)
-           (FastAPI :8080)      ──► FrankaServer     (arm, ZMQ 1 kHz)
-                                ──► gripper_server   (Robotiq gripper, ZMQ)
-                                ──► camera_server    (RealSense cameras, WebSocket)
-                                ──► mocap_server     (OptiTrack motion capture)
+Agent ──► agent_server ──► hardware/base_server      (mobile base)
+           (FastAPI :8080) ──► hardware/arm_server    (arm, ZMQ 1 kHz)
+                           ──► hardware/gripper_server (Robotiq gripper, ZMQ)
+                           ──► hardware/camera_server  (RealSense cameras, WebSocket)
+                           ──► mocap_server            (OptiTrack motion capture)
 ```
 
 ## CLI Options
