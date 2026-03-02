@@ -22,7 +22,7 @@ Built on FastAPI. Runs on the robot's onboard computer. Talks to hardware over Z
                   Arm      Base       2F-85    D405/D435
 ```
 
-This repo is part of [TidyBot-Services](https://github.com/TidyBot-Services) — shared infrastructure for the TidyBot fleet. Skills that run on this server live in [tidybot-skills](https://github.com/tidybot-skills) — things like [pick-up-object](https://github.com/tidybot-skills/pick-up-object), [arm-sweep](https://github.com/tidybot-skills/arm-sweep), and [count-people-in-room](https://github.com/tidybot-skills/count-people-in-room).
+This repo is part of [TidyBot-Services](https://github.com/TidyBot-Services) — shared infrastructure for the TidyBot fleet. Skills that run on this server live in [tidybot-skills](https://github.com/tidybot-skills) — things like [pick-up-object](https://github.com/tidybot-skills/pick-up-object), [pick-and-place](https://github.com/tidybot-skills/pick-and-place), and [count-people-in-room](https://github.com/tidybot-skills/count-people-in-room).
 
 > **Looking for the full API and SDK docs?** See [README_DETAILED.md](README_DETAILED.md) for the complete SDK reference, API tables, response schemas, and working examples.
 
