@@ -401,7 +401,7 @@ All rewind POST endpoints require a lease.
 
 ## Important behaviors
 
-**Auto-rewind on lease release** — When a lease is released (or expires), the robot automatically rewinds to its starting position and clears the trajectory. To run multiple code executions without rewinding in between, keep the same lease — only release it when you're done.
+**Auto-home on lease release** — When a lease is released (or expires), the robot moves straight to its home position and clears the trajectory. To retrace the arm's path in reverse first (safer when it might collide on a straight move), set `rewind_on_release: true` when acquiring the lease. To run multiple code executions without going home in between, keep the same lease — only release it when you're done.
 
 **Timeout** — Code execution has a 5-minute default timeout. Override per-request with the `timeout` field (in seconds). On timeout, the process is killed and the robot holds position.
 
