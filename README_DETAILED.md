@@ -154,7 +154,30 @@ base_pose = sensors.get_base_pose()          # (x, y, theta)
 
 # Gripper
 gripper_pos = sensors.get_gripper_position() # 0–255
+gripper_w = sensors.get_gripper_width()      # Width in meters (if calibrated), else None
 is_holding = sensors.is_gripper_holding()    # True if object detected
+
+# Arm hold state
+is_holding_pos = sensors.is_arm_holding()    # True if arm is in auto-hold mode
+
+# Motion capture (if available)
+mocap = sensors.get_mocap_pose()             # (x, y, theta) from OptiTrack, or None
+
+# Camera frames
+frame = sensors.get_camera_frame()           # JPEG bytes from default camera
+frame = sensors.get_camera_frame("12345")    # JPEG from specific device_id
+depth = sensors.get_depth_frame()            # PNG bytes (uint16 depth) from default camera
+depth = sensors.get_depth_frame("12345")     # PNG from specific device_id
+
+# Camera intrinsics (needed for 3D projection)
+intrinsics = sensors.get_camera_intrinsics()         # {fx, fy, cx, cy, depth_scale, ...}
+intrinsics = sensors.get_camera_intrinsics("12345")  # For specific device
+
+# Stereo / IR frames (for depth estimation, FoundationStereo, etc.)
+ir_left = sensors.get_infrared_frame("left")         # JPEG bytes, left IR sensor
+ir_right = sensors.get_infrared_frame("right")       # JPEG bytes, right IR sensor
+left, right = sensors.get_stereo_pair()               # Both IR frames as (left_jpg, right_jpg)
+ir_intr = sensors.get_ir_intrinsics("left")           # IR sensor intrinsics
 
 # Everything at once
 state = sensors.get_all_state()              # Full state dict
@@ -181,8 +204,12 @@ rewind.clear_trajectory()           # Clear all recorded waypoints
 from robot_sdk import display
 
 display.show_text("Hello!")                   # Show text on robot display
-display.show_image("/path/to/image.png")      # Show image
-display.clear()                               # Clear display
+display.show_face("thinking")                 # Change face expression
+                                              # Options: happy, thinking, sad, neutral, excited, concerned
+display.show_image("/path/to/image.png")      # Show image (path, bytes, or numpy array)
+display.show_plot()                           # Render current matplotlib figure to display
+display.show_plot(fig)                        # Render specific matplotlib figure
+display.clear()                               # Clear display and revert face to default
 ```
 
 ### yolo
