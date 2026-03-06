@@ -138,27 +138,39 @@ See the [Tidybot-Universe](https://github.com/TidyBot-Services/Tidybot-Universe)
 ```
 ├── server.py                  # FastAPI application
 ├── config.py                  # Configuration and service definitions
+├── auth.py                    # API key authentication middleware
 ├── code_executor.py           # Subprocess code execution engine
 ├── execution_recorder.py      # Camera + state recording during execution
 ├── lease.py                   # Lease manager (queue, idle detection)
 ├── state.py                   # State aggregator (polls backends)
 ├── safety.py                  # Safety envelope (bounds, limits)
+├── safety_monitor.py          # Real-time safety monitoring
 ├── services.py                # Service manager (process lifecycle)
+├── display_state.py           # Display/face state management
+├── arm_monitor.py             # Arm state monitoring
+├── workspace_teacher.py       # Workspace boundary teaching
+├── gamepad_client.py          # Gamepad/joystick input
 │
 ├── robot_sdk/                 # SDK available in submitted code
 │   ├── arm.py                 #   Joint/Cartesian control
 │   ├── base.py                #   Mobile base control
 │   ├── gripper.py             #   Gripper control
-│   ├── sensors.py             #   Read-only state access
+│   ├── sensors.py             #   Read-only state + camera access
 │   ├── rewind.py              #   Trajectory reversal
-│   ├── display.py             #   Display control
+│   ├── display.py             #   Display + face control
 │   └── yolo.py                #   YOLO object detection
 │
 ├── backends/                  # Hardware backend clients
 │   ├── franka.py              #   Franka arm (ZMQ)
 │   ├── base.py                #   Mobile base (RPC)
 │   ├── gripper.py             #   Robotiq gripper (ZMQ)
-│   └── cameras.py             #   RealSense cameras (WebSocket)
+│   ├── cameras.py             #   RealSense cameras (WebSocket)
+│   └── mocap.py               #   OptiTrack motion capture
+│
+├── controllers/               # High-level control modes
+│   ├── arm_controller.py      #   Arm position controller
+│   ├── base_controller.py     #   Base position controller
+│   └── streaming_arm_controller.py  # Streaming arm control
 │
 ├── routes/                    # API route handlers
 │   ├── code_routes.py         #   /code/* endpoints
@@ -166,8 +178,12 @@ See the [Tidybot-Universe](https://github.com/TidyBot-Services/Tidybot-Universe)
 │   ├── state_routes.py        #   /state, /health, /trajectory
 │   ├── rewind_routes.py       #   /rewind/* endpoints
 │   ├── service_routes.py      #   /services/* + web dashboard
-│   ├── ws.py                  #   WebSocket handlers
-│   └── sdk_docs.py            #   Auto-generated SDK docs
+│   ├── display_routes.py      #   /display/* + /face endpoints
+│   ├── workspace_routes.py    #   /workspace/* boundary management
+│   ├── yolo_routes.py         #   /yolo/* visualization
+│   ├── system_guide.py        #   /docs/guide getting-started guide
+│   ├── sdk_docs.py            #   Auto-generated SDK docs
+│   └── ws.py                  #   WebSocket handlers
 │
 ├── examples/                  # Example scripts
 │   ├── simple_move.py         #   Basic arm + base movement
