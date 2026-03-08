@@ -52,7 +52,7 @@ class BaseAPI:
         mocap_backend=None,
         timeout: float = 30.0,
         position_tolerance_m: float = 0.05,
-        angle_tolerance_rad: float = 0.05,
+        angle_tolerance_rad: float = 0.10,
     ) -> None:
         self._backend = backend
         self._mocap = mocap_backend
