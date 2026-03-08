@@ -9,13 +9,23 @@ import threading
 import time
 from typing import Optional, Dict, List, Any
 
-# Add camera_server to path
+# Add camera_server to path — prefer sim camera_server if available,
+# fall back to hardware camera_server
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'hardware', 'camera_server'))
+_agent_dir = os.path.dirname(os.path.abspath(__file__))
+_sim_cam = os.path.join(_agent_dir, '..', '..', 'sim', 'sim_server')
+_hw_cam = os.path.join(_agent_dir, '..', '..', 'hardware', 'camera_server')
+# Sim path first so it wins if both exist
+if os.path.isdir(os.path.join(_sim_cam, 'camera_server')):
+    sys.path.insert(0, os.path.abspath(_sim_cam))
+else:
+    sys.path.insert(0, os.path.abspath(_hw_cam))
 
 try:
     from camera_server.client import CameraClient, DecodedFrame
     from camera_server.protocol import CameraStateMsg, CameraInfo
+    import camera_server as _cs_mod
+    print(f"[cameras] loaded camera_server from {_cs_mod.__file__}")
     CAMERA_CLIENT_AVAILABLE = True
 except ImportError:
     CAMERA_CLIENT_AVAILABLE = False
@@ -93,9 +103,9 @@ class CameraBackend:
             self._connected = True
             logger.info("CameraBackend: connected to %s:%d", self._cfg.host, self._cfg.port)
 
-            # Fetch and cache intrinsics BEFORE starting streaming thread
-            # (streaming starts a recv thread that races with synchronous calls)
-            self._cache_intrinsics()
+            # NOTE: Skip _cache_intrinsics() here — it calls recv() which
+            # can poison the socket for the recv thread in websockets >=16.
+            # Intrinsics will be fetched on-demand via the intrinsics cache.
 
             # Set up frame callback for caching
             self._client.set_frame_callback(self._on_frame)
@@ -317,6 +327,11 @@ class CameraBackend:
             return None
         
         try:
+            # If recv thread is running, use cached state to avoid blocking
+            if self._client._running:
+                if self._client.latest_state:
+                    return self._client.latest_state.to_dict()
+                return None
             state = self._client.get_state()
             if state:
                 return state.to_dict()

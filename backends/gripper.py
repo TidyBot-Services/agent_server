@@ -39,6 +39,10 @@ class GripperBackend:
             sys.path.insert(0, os.path.abspath(gripper_pkg))
 
         from gripper_server.client import GripperClient
+        import gripper_server
+        logger.info("GripperBackend: loaded gripper_server from %s", gripper_server.__file__)
+        logger.info("GripperBackend: _send_command uses: %s", 
+                     getattr(GripperClient._send_command, '__module__', '?'))
 
         self._client = GripperClient(
             server_ip=self._cfg.host,

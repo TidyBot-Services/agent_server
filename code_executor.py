@@ -793,6 +793,11 @@ from robot_sdk.display import DisplayAPI
 robot_sdk.display = DisplayAPI(server_url=server_url)
 print("[SDK] Display API initialized")
 
+# Initialize generic HTTP client (for calling any external service)
+from robot_sdk import http as _http_module
+robot_sdk.http = _http_module
+print("[SDK] HTTP client initialized")
+
 # Make them available for import
 arm = robot_sdk.arm
 base = robot_sdk.base
@@ -801,6 +806,7 @@ sensors = robot_sdk.sensors
 rewind = robot_sdk.rewind
 yolo = robot_sdk.yolo
 display = robot_sdk.display
+http = robot_sdk.http
 
 # Also expose backends directly for advanced usage
 # (same pattern as rewind orchestrator uses)
