@@ -131,6 +131,7 @@ def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> F
     )
 
     # Wire lease-end callback: go home (optionally rewind first) + clear trajectory
+    # If a sim HTTP API is detected, also soft-reset the scene after homing.
     if cfg.lease.reset_on_release:
         async def _on_lease_end(rewind: bool):
             if rewind:
@@ -142,6 +143,25 @@ def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> F
             else:
                 await rewind_orchestrator.go_home()
                 system_logger.clear()
+
+            # Sim auto-reset: if a sim server is running, soft-reset the scene
+            # so the next trial starts fresh. Silently ignored on real hardware.
+            await _try_sim_reset()
+
+        async def _try_sim_reset():
+            """Try to soft-reset the sim scene. No-op if sim isn't running."""
+            import aiohttp
+            sim_url = "http://localhost:8081/reset"
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(sim_url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                        if resp.status == 200:
+                            logger.info("Sim scene soft-reset after lease end")
+                        else:
+                            logger.debug("Sim reset returned %d (sim may not be running)", resp.status)
+            except Exception:
+                # No sim running — this is expected on real hardware
+                pass
 
         lease_mgr.set_on_lease_end(_on_lease_end)
 
