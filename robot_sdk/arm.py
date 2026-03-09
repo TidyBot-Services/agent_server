@@ -67,11 +67,11 @@ class ArmAPI:
         backend: FrankaBackend,
         *,
         motion_timeout: float = 30.0,
-        settle_timeout: float = 3.0,
+        settle_timeout: float = 5.0,
         command_rate_hz: float = 50.0,
-        converge_pos_m: float = 0.03,
-        converge_joint_rad: float = 0.02,
-        converge_vel: float = 0.05,
+        converge_pos_m: float = 0.06,
+        converge_joint_rad: float = 0.04,
+        converge_vel: float = 0.10,
     ) -> None:
         self._backend = backend
         self._timeout = motion_timeout
