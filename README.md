@@ -131,6 +131,7 @@ See the [Tidybot-Universe](https://github.com/TidyBot-Services/Tidybot-Universe)
 | 8080 | Agent server (HTTP + WebSocket) |
 | 50000 | Base server (RPC) |
 | 5555–5557 | Franka server (ZMQ cmd/state/stream) |
+| 5570–5571 | Gripper server (ZMQ cmd/state) |
 | 5580+ | Camera servers (WebSocket) |
 
 ## Project structure
