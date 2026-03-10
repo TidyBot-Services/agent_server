@@ -113,7 +113,7 @@ base.rotate_degrees(90)                             # Rotate 90° CCW
 base.rotate_degrees(-45)                            # Rotate 45° CW
 
 # Velocity control
-base.send_velocity(vx=0.1, vy=0, vtheta=0, duration=2.0)
+base.send_velocity(vx=0.1, vy=0, wz=0, duration=2.0)
 base.stop()
 ```
 
