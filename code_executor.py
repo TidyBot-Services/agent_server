@@ -8,6 +8,7 @@ import logging
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -401,7 +402,7 @@ class CodeExecutor:
         execution_id: str,
         timeout: float = TIMING.code_execution_timeout_s,
         lease_id: Optional[str] = None,
-        server_url: str = "http://localhost:8080",
+        server_url: str = "",
         holder: str = "",
         client_host: str = "",
         api_key_name: str = "",
@@ -428,7 +429,7 @@ class CodeExecutor:
         self._execution_id = execution_id
         self._start_time = time.time()
         self._lease_id = lease_id
-        self._server_url = server_url
+        self._server_url = server_url or os.getenv("ROBOT_SERVER_URL", "http://localhost:8080")
         self._holder = holder
         self._client_host = client_host
         self._api_key_name = api_key_name
@@ -450,7 +451,7 @@ class CodeExecutor:
         try:
             # Start subprocess
             self._process = subprocess.Popen(
-                ["python3", "-u", str(temp_file)],  # -u for unbuffered output
+                [sys.executable, "-u", str(temp_file)],  # -u for unbuffered output
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
