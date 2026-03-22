@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
 import uuid
+from collections import deque
+from dataclasses import dataclass, field
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Header, Query, Request
@@ -79,9 +82,198 @@ class CodeValidateResponse(BaseModel):
     message: str = ""
 
 
+# -- Job submit models (fire-and-forget) ------------------------------------
+
+class CodeSubmitRequest(BaseModel):
+    """Request to submit code to the job queue (no lease required)."""
+    code: str = Field(..., description="Python code to execute")
+    holder: str = Field("anonymous", description="Identifier for the submitter")
+    timeout: Optional[float] = Field(None, description="Optional timeout in seconds")
+    reset_env: bool = Field(True, description="Reset sim environment before running (default: true)")
+
+
+@dataclass
+class Job:
+    """A queued code execution job."""
+    job_id: str
+    code: str
+    holder: str
+    timeout: float
+    reset_env: bool
+    status: str = "queued"          # queued | running | completed | failed
+    position: int = 0
+    submitted_at: float = 0.0
+    started_at: float = 0.0
+    finished_at: float = 0.0
+    execution_id: str = ""
+    result: Optional[ExecutionResult] = None
+    error: str = ""
+
+
+class JobQueue:
+    """Fire-and-forget job queue that manages lease lifecycle internally."""
+
+    def __init__(self) -> None:
+        self._jobs: dict[str, Job] = {}           # job_id -> Job
+        self._pending: deque[str] = deque()        # job_ids waiting to run
+        self._running: bool = False                # is the processor loop active
+        self._processor_task: Optional[asyncio.Task] = None
+        self._lease_manager: Optional[LeaseManager] = None
+        self._camera_backend: Optional[CameraBackend] = None
+        self._state_agg = None
+
+    def init(self, lease_manager: LeaseManager, camera_backend: CameraBackend, state_agg=None):
+        self._lease_manager = lease_manager
+        self._camera_backend = camera_backend
+        self._state_agg = state_agg
+
+    def submit(self, code: str, holder: str, timeout: float, reset_env: bool = True) -> Job:
+        job_id = str(uuid.uuid4())[:8]
+        job = Job(
+            job_id=job_id,
+            code=code,
+            holder=holder,
+            timeout=timeout,
+            reset_env=reset_env,
+            submitted_at=time.time(),
+        )
+        self._jobs[job_id] = job
+        self._pending.append(job_id)
+        self._update_positions()
+        self._ensure_processor()
+        return job
+
+    def get_job(self, job_id: str) -> Optional[Job]:
+        return self._jobs.get(job_id)
+
+    def list_jobs(self, holder: Optional[str] = None) -> list[Job]:
+        jobs = list(self._jobs.values())
+        if holder:
+            jobs = [j for j in jobs if j.holder == holder]
+        return sorted(jobs, key=lambda j: j.submitted_at, reverse=True)
+
+    def get_summary(self, holder: Optional[str] = None) -> dict:
+        jobs = self.list_jobs(holder)
+        total = len(jobs)
+        by_status = {}
+        for j in jobs:
+            by_status[j.status] = by_status.get(j.status, 0) + 1
+        done = by_status.get("completed", 0) + by_status.get("failed", 0)
+        success_rate = by_status.get("completed", 0) / done if done > 0 else None
+        return {
+            "total": total,
+            "completed": by_status.get("completed", 0),
+            "failed": by_status.get("failed", 0),
+            "queued": by_status.get("queued", 0),
+            "running": by_status.get("running", 0),
+            "success_rate": success_rate,
+        }
+
+    def _update_positions(self):
+        for i, job_id in enumerate(self._pending):
+            job = self._jobs.get(job_id)
+            if job:
+                job.position = i + 1
+
+    def _ensure_processor(self):
+        if self._processor_task is None or self._processor_task.done():
+            self._processor_task = asyncio.create_task(self._process_loop())
+
+    async def _process_loop(self):
+        """Process jobs one at a time, acquiring/releasing lease for each."""
+        while self._pending:
+            job_id = self._pending.popleft()
+            job = self._jobs.get(job_id)
+            if not job:
+                continue
+            self._update_positions()
+            await self._run_job(job)
+
+    async def _run_job(self, job: Job):
+        """Run a single job: acquire lease, execute, release."""
+        job.status = "running"
+        job.started_at = time.time()
+        lease_id = None
+
+        try:
+            # Wait for any ongoing reset to finish before acquiring
+            for _ in range(120):
+                if not self._lease_manager._resetting:
+                    break
+                await asyncio.sleep(0.5)
+
+            # Acquire lease
+            lease_resp = await self._lease_manager.acquire(holder=f"job:{job.holder}:{job.job_id}")
+            lease_id = lease_resp.get("lease_id")
+
+            if not lease_id:
+                # Lease not available — got a queue ticket, poll until granted
+                ticket_id = lease_resp.get("ticket_id")
+                if ticket_id:
+                    for _ in range(600):  # up to 10 min
+                        ticket = self._lease_manager.check_ticket(ticket_id)
+                        if ticket.get("status") == "granted":
+                            lease_id = ticket.get("lease_id")
+                            break
+                        if ticket.get("status") in ("expired", "cancelled", "not_found"):
+                            break
+                        await asyncio.sleep(1)
+
+            if not lease_id:
+                job.status = "failed"
+                job.error = "Could not acquire lease"
+                job.finished_at = time.time()
+                return
+
+            # Keep lease alive during execution
+            self._lease_manager.record_command()
+
+            # Execute code
+            executor = get_executor()
+            recorder = get_recorder()
+            execution_id = str(uuid.uuid4())[:8]
+            job.execution_id = execution_id
+            timeout = job.timeout or TIMING.code_execution_timeout_s
+
+            recorder.start(execution_id, self._camera_backend, self._state_agg)
+            try:
+                result = await executor.execute(
+                    code=job.code,
+                    execution_id=execution_id,
+                    timeout=timeout,
+                    lease_id=lease_id,
+                    holder=job.holder,
+                )
+            finally:
+                recorder.stop()
+                recorder.cleanup_old_recordings()
+
+            job.result = result
+            job.status = "completed" if result.status == ExecutionStatus.COMPLETED else "failed"
+            if result.error:
+                job.error = result.error
+            job.finished_at = time.time()
+            logger.info(f"Job {job.job_id} finished: {job.status} (execution {execution_id})")
+
+        except Exception as e:
+            job.status = "failed"
+            job.error = str(e)
+            job.finished_at = time.time()
+            logger.error(f"Job {job.job_id} failed: {e}", exc_info=True)
+
+        finally:
+            # Release lease
+            if lease_id:
+                try:
+                    await self._lease_manager.release(lease_id)
+                except Exception:
+                    pass
+
+
 # Module-level singletons (shared across routes)
 _executor: Optional[CodeExecutor] = None
 _recorder: Optional[ExecutionRecorder] = None
+_job_queue: Optional[JobQueue] = None
 
 
 def get_executor() -> CodeExecutor:
@@ -98,6 +290,14 @@ def get_recorder() -> ExecutionRecorder:
     if _recorder is None:
         _recorder = ExecutionRecorder()
     return _recorder
+
+
+def get_job_queue() -> JobQueue:
+    """Get or create job queue instance."""
+    global _job_queue
+    if _job_queue is None:
+        _job_queue = JobQueue()
+    return _job_queue
 
 
 def init_code_routes(lease_manager: LeaseManager, camera_backend: CameraBackend, state_agg=None):
@@ -428,5 +628,101 @@ def init_code_routes(lease_manager: LeaseManager, camera_backend: CameraBackend,
         """
         recorder = get_recorder()
         return {"recordings": recorder.list_recordings()}
+
+    # -- Fire-and-forget job queue -------------------------------------------
+
+    job_queue = get_job_queue()
+    job_queue.init(lease_manager, camera_backend, state_agg)
+
+    @router.post("/submit")
+    async def submit_job(body: CodeSubmitRequest):
+        """Submit code to the job queue (fire-and-forget).
+
+        No lease required — the server acquires and releases leases internally.
+        Jobs are executed in FIFO order. Use GET /code/jobs/{job_id} to check status.
+        """
+        # Validate code
+        executor = get_executor()
+        validation = executor.validate_code(body.code)
+        if not validation.valid:
+            return JSONResponse(
+                {"error": "Code validation failed", "details": validation.errors},
+                status_code=400,
+            )
+
+        timeout = body.timeout if body.timeout is not None else TIMING.code_execution_timeout_s
+        job = job_queue.submit(body.code, body.holder, timeout, body.reset_env)
+        logger.info(f"Job {job.job_id} submitted by {body.holder} (position {job.position})")
+
+        return {
+            "job_id": job.job_id,
+            "status": job.status,
+            "position": job.position,
+        }
+
+    @router.get("/jobs")
+    async def list_jobs(holder: Optional[str] = Query(None, description="Filter by holder")):
+        """List all jobs with optional holder filter.
+
+        No lease required (read-only).
+        """
+        jobs = job_queue.list_jobs(holder)
+        summary = job_queue.get_summary(holder)
+
+        return {
+            "jobs": [
+                {
+                    "job_id": j.job_id,
+                    "holder": j.holder,
+                    "status": j.status,
+                    "position": j.position if j.status == "queued" else None,
+                    "execution_id": j.execution_id or None,
+                    "submitted_at": j.submitted_at,
+                    "started_at": j.started_at or None,
+                    "finished_at": j.finished_at or None,
+                    "duration": (j.finished_at - j.started_at) if j.finished_at and j.started_at else None,
+                    "exit_code": j.result.exit_code if j.result else None,
+                    "error": j.error or None,
+                }
+                for j in jobs
+            ],
+            "summary": summary,
+        }
+
+    @router.get("/jobs/{job_id}")
+    async def get_job(job_id: str):
+        """Get detailed status of a specific job.
+
+        Returns full result including stdout/stderr when completed.
+        No lease required (read-only).
+        """
+        job = job_queue.get_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+        resp = {
+            "job_id": job.job_id,
+            "holder": job.holder,
+            "status": job.status,
+            "position": job.position if job.status == "queued" else None,
+            "execution_id": job.execution_id or None,
+            "submitted_at": job.submitted_at,
+            "started_at": job.started_at or None,
+            "finished_at": job.finished_at or None,
+            "duration": (job.finished_at - job.started_at) if job.finished_at and job.started_at else None,
+            "error": job.error or None,
+        }
+
+        if job.result:
+            resp["result"] = {
+                "status": job.result.status,
+                "exit_code": job.result.exit_code,
+                "stdout": job.result.stdout,
+                "stderr": job.result.stderr,
+                "duration": job.result.duration,
+                "error": job.result.error,
+            }
+
+        return resp
 
     return router

@@ -82,6 +82,9 @@ Submit Python code that runs in a subprocess with access to a rich SDK.
 | `GET /code/recordings` | GET | List all execution IDs with recordings |
 | `GET /code/recordings/{id}` | GET | Recording timeline: frames matched with nearest state by timestamp |
 | `GET /code/recordings/{id}/frames/{filename}` | GET | Serve a recorded JPEG frame |
+| `POST /code/submit` | POST | **Fire-and-forget**: submit code to job queue (no lease required) |
+| `GET /code/jobs` | GET | List all jobs with summary stats (`?holder=name` to filter) |
+| `GET /code/jobs/{job_id}` | GET | Get job status and result (stdout/stderr when done) |
 
 **Request format (`POST /code/execute`):**
 ```json
@@ -167,6 +170,44 @@ requests.post("http://localhost:8080/lease/release",
 ```
 
 See `examples/` for usage examples (`pick_and_place.py`, `simple_move.py`) and `tests/` for test scripts.
+
+**Fire-and-Forget Job Queue (`POST /code/submit`):**
+
+For batch testing or when agents don't want to manage leases. Submit code, get a job ID, check results later.
+
+```python
+import requests
+import time
+
+URL = "http://localhost:8080"
+
+# Submit multiple jobs — no lease needed
+jobs = []
+for i in range(5):
+    resp = requests.post(f"{URL}/code/submit", json={
+        "code": f"from robot_sdk import sensors\nprint('Job {i}:', sensors.get_arm_joints())",
+        "holder": "test-batch",
+    })
+    jobs.append(resp.json()["job_id"])
+    print(f"Submitted job {resp.json()['job_id']} (position {resp.json()['position']})")
+
+# Wait for all to finish
+while True:
+    resp = requests.get(f"{URL}/code/jobs", params={"holder": "test-batch"}).json()
+    summary = resp["summary"]
+    done = summary["completed"] + summary["failed"]
+    print(f"Progress: {done}/{summary['total']} (success rate: {summary['success_rate']})")
+    if summary["queued"] == 0 and summary["running"] == 0:
+        break
+    time.sleep(2)
+
+# Check individual results
+for job_id in jobs:
+    result = requests.get(f"{URL}/code/jobs/{job_id}").json()
+    print(f"{job_id}: {result['status']} — {result.get('result', {}).get('stdout', '')[:80]}")
+```
+
+Jobs run in FIFO order. The server acquires/releases leases internally, resets the environment between jobs (configurable via `reset_env`), and records camera frames + state for each execution.
 
 **How It Works:**
 1. Code runs in isolated subprocess with 5-minute default timeout
