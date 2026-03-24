@@ -136,6 +136,11 @@ person = result3d.get_closest("person")
 
 # Visualization at GET /yolo/visualization
 
+# Find objects in the scene (world-frame positions)
+objects = sensors.find_objects()
+for obj in objects:
+    print(f"{obj['name']} at ({obj['x']:.3f}, {obj['y']:.3f}, {obj['z']:.3f})")
+
 # Whole-body motion (base + arm, collision-free)
 wb.move_to_pose(x=0.5, y=0.2, z=0.8)  # world frame, top-down orientation
 wb.move_to_pose(x=0.5, y=0.2, z=0.8, quat=[0, 1, 0, 0], mask="arm_only")

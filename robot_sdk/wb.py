@@ -95,6 +95,15 @@ class WholeBodyAPI:
         Raises:
             WholeBodyError: If planning fails or execution times out
         """
+        # Check base connectivity before planning whole-body moves
+        if mask == "whole_body":
+            try:
+                self._base.get_state()
+            except Exception:
+                raise WholeBodyError(
+                    "Base backend not connected — cannot execute whole-body trajectory. "
+                    "Use mask='arm_only' or fix the base connection.")
+
         plan = self._call_planner("/plan", {
             "target_pose": [x, y, z],
             "target_quat": quat,

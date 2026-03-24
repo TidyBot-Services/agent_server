@@ -204,6 +204,72 @@ class SensorAPI:
         except BaseBackendError as e:
             raise SensorError(f"Failed to read robot state: {e}") from e
 
+    # -- Perception methods ---------------------------------------------------
+
+    def find_objects(
+        self,
+        target_names: Optional[list[str]] = None,
+        camera_names: Optional[list[str]] = None,
+    ) -> list[dict]:
+        """Find objects in the scene using depth + segmentation cameras.
+
+        Returns world-frame 3D positions for all detected objects, sorted
+        by distance to the arm base (nearest first). Uses the sim's
+        ground-truth segmentation — no neural network needed.
+
+        Args:
+            target_names: Only detect these object names (default: all graspable objects)
+            camera_names: Which cameras to use (default: all available)
+
+        Returns:
+            List of dicts, each with keys:
+                name (str): Object name (e.g. "banana_0")
+                x, y, z (float): World-frame position in meters
+                size_x, size_y, size_z (float): Bounding box dimensions in meters
+                distance_m (float): Distance from arm base
+                fixture_context (str): Where the object is ("counter", "drawer_interior", etc.)
+                mask_pixels (int): Detection size in pixels
+                aspect_ratio (float): Shape elongation (1.0 = circular)
+
+        Raises:
+            SensorError: If perception server is unreachable or segmentation unavailable
+
+        Example:
+            objects = sensors.find_objects()
+            for obj in objects:
+                print(f"{obj['name']} at ({obj['x']:.3f}, {obj['y']:.3f}, {obj['z']:.3f})")
+
+            # Find specific objects
+            cups = sensors.find_objects(target_names=["cup_0", "mug_0"])
+
+            # Get closest object
+            nearest = sensors.find_objects()[0]
+            print(f"Nearest: {nearest['name']} at {nearest['distance_m']:.2f}m")
+        """
+        import urllib.request
+        planner_url = os.getenv("PLANNER_URL", "http://localhost:5500")
+        url = f"{planner_url}/perceive"
+        body = json.dumps({
+            "target_names": target_names,
+            "camera_names": camera_names,
+        }).encode()
+        req = urllib.request.Request(
+            url, data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                result = json.loads(resp.read())
+        except urllib.error.URLError as e:
+            raise SensorError(
+                f"Perception server unreachable at {url}: {e}") from e
+
+        if "error" in result:
+            raise SensorError(f"Perception failed: {result['error']}")
+
+        return result.get("objects", [])
+
     # -- Camera methods ------------------------------------------------------
 
     def _camera_headers(self) -> dict:
