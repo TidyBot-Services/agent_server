@@ -681,7 +681,7 @@ from backends.base import BaseBackend
 from backends.gripper import GripperBackend
 from backends.mocap import MocapBackend
 from config import FrankaBackendConfig, BaseBackendConfig, GripperBackendConfig, MocapBackendConfig, TimingConfig
-from robot_sdk import ArmAPI, BaseAPI, GripperAPI, SensorAPI, YoloAPI
+from robot_sdk import ArmAPI, BaseAPI, GripperAPI, SensorAPI, YoloAPI, WholeBodyAPI
 
 timing = TimingConfig()
 import robot_sdk
@@ -794,6 +794,16 @@ from robot_sdk.display import DisplayAPI
 robot_sdk.display = DisplayAPI(server_url=server_url)
 print("[SDK] Display API initialized")
 
+# Initialize whole-body motion API (uses planning server)
+from robot_sdk.wb import WholeBodyAPI
+planner_url = os.getenv("PLANNER_URL", "http://localhost:5500")
+robot_sdk.wb = WholeBodyAPI(
+    arm_backend=franka_backend,
+    base_backend=base_backend,
+    planner_url=planner_url,
+)
+print(f"[SDK] Whole-body API initialized (planner: {{planner_url}})")
+
 # Initialize generic HTTP client (for calling any external service)
 from robot_sdk import http as _http_module
 robot_sdk.http = _http_module
@@ -807,6 +817,7 @@ sensors = robot_sdk.sensors
 rewind = robot_sdk.rewind
 yolo = robot_sdk.yolo
 display = robot_sdk.display
+wb = robot_sdk.wb
 http = robot_sdk.http
 
 # Also expose backends directly for advanced usage

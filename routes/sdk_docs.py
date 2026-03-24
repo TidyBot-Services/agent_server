@@ -103,7 +103,7 @@ def generate_sdk_docs() -> dict:
         "description": "Robot SDK for code execution. Import these modules in submitted code.",
         "modules": {},
         "usage": {
-            "example": """from robot_sdk import arm, base, gripper, sensors, rewind, yolo
+            "example": """from robot_sdk import arm, base, gripper, sensors, rewind, yolo, wb
 
 # Move arm
 arm.move_joints([0, -0.785, 0, -2.356, 0, 1.571, 0.785])
@@ -136,6 +136,11 @@ person = result3d.get_closest("person")
 
 # Visualization at GET /yolo/visualization
 
+# Whole-body motion (base + arm, collision-free)
+wb.move_to_pose(x=0.5, y=0.2, z=0.8)  # world frame, top-down orientation
+wb.move_to_pose(x=0.5, y=0.2, z=0.8, quat=[0, 1, 0, 0], mask="arm_only")
+wb.go_home()
+
 # Error recovery with rewind
 if rewind.is_out_of_bounds():
     result = rewind.rewind_to_safe()
@@ -162,6 +167,7 @@ if rewind.is_out_of_bounds():
         from robot_sdk.sensors import SensorAPI
         from robot_sdk.rewind import RewindAPI
         from robot_sdk.yolo import YoloAPI
+        from robot_sdk.wb import WholeBodyAPI
 
         docs["modules"]["arm"] = {
             "import": "from robot_sdk import arm",
@@ -197,6 +203,12 @@ if rewind.is_out_of_bounds():
             "import": "from robot_sdk import yolo",
             "description": "YOLO object detection and segmentation using camera frames",
             **get_class_info(YoloAPI),
+        }
+
+        docs["modules"]["wb"] = {
+            "import": "from robot_sdk import wb",
+            "description": "Whole-body motion — coordinated base + arm movement with collision-free planning",
+            **get_class_info(WholeBodyAPI),
         }
 
         # Add YOLO result types (auto-introspected from dataclasses)
