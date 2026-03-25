@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 
 _CODE_DIR = Path(__file__).resolve().parent.parent / "logs" / "code_executions"
 
-# Capture interval (0.5 Hz = every 2 seconds)
-_CAPTURE_INTERVAL = 2.0
+# Capture interval (5 Hz = every 200ms)
+_CAPTURE_INTERVAL = 0.2
 
 # State capture interval (10 Hz)
 _STATE_INTERVAL = 0.1
