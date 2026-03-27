@@ -47,6 +47,10 @@ logger = setup_logging("agent_server")
 def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> FastAPI:
     app = FastAPI(title="TidyBot Hardware Server")
 
+    # -- CORS (allow dashboard on other ports to fetch recordings) -----------
+    from fastapi.middleware.cors import CORSMiddleware
+    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
     # -- API key auth --------------------------------------------------------
     keys_path = os.path.join(_SERVER_DIR, "api_keys.json")
     key_store = KeyStore(keys_path)
