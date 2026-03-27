@@ -25,24 +25,7 @@ class GripperBackend:
             logger.info("GripperBackend: dry-run mode, skipping connection")
             return
 
-        import sys
-        import os
-
-        gripper_pkg = os.path.join(
-            os.path.dirname(__file__),
-            "..",
-            "..",
-            "hardware",
-            "gripper_server",
-        )
-        if gripper_pkg not in sys.path:
-            sys.path.insert(0, os.path.abspath(gripper_pkg))
-
-        from gripper_server.client import GripperClient
-        import gripper_server
-        logger.info("GripperBackend: loaded gripper_server from %s", gripper_server.__file__)
-        logger.info("GripperBackend: _send_command uses: %s", 
-                     getattr(GripperClient._send_command, '__module__', '?'))
+        from gripper_protocol.client import GripperClient
 
         self._client = GripperClient(
             server_ip=self._cfg.host,

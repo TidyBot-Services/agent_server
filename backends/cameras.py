@@ -9,23 +9,9 @@ import threading
 import time
 from typing import Optional, Dict, List, Any
 
-# Add camera_server to path — prefer sim camera_server if available,
-# fall back to hardware camera_server
-import os
-_agent_dir = os.path.dirname(os.path.abspath(__file__))
-_sim_cam = os.path.join(_agent_dir, '..', '..', 'sim', 'sim_server')
-_hw_cam = os.path.join(_agent_dir, '..', '..', 'hardware', 'camera_server')
-# Sim path first so it wins if both exist
-if os.path.isdir(os.path.join(_sim_cam, 'camera_server')):
-    sys.path.insert(0, os.path.abspath(_sim_cam))
-else:
-    sys.path.insert(0, os.path.abspath(_hw_cam))
-
 try:
-    from camera_server.client import CameraClient, DecodedFrame
-    from camera_server.protocol import CameraStateMsg, CameraInfo
-    import camera_server as _cs_mod
-    print(f"[cameras] loaded camera_server from {_cs_mod.__file__}")
+    from camera_protocol.client import CameraClient, DecodedFrame
+    from camera_protocol.protocol import CameraStateMsg, CameraInfo
     CAMERA_CLIENT_AVAILABLE = True
 except ImportError:
     CAMERA_CLIENT_AVAILABLE = False

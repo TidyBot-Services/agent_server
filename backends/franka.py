@@ -34,20 +34,7 @@ class FrankaBackend:
 
         # Import here so the server can start even without franka_server package
         # when in dry-run mode.
-        import sys, os
-
-        franka_pkg = os.path.join(
-            os.path.dirname(__file__),
-            "..",
-            "..",
-            "hardware",
-            "arm_server",
-            "franka_server",
-        )
-        if franka_pkg not in sys.path:
-            sys.path.insert(0, os.path.abspath(franka_pkg))
-
-        from franka_server.client import FrankaClient
+        from franka_protocol.client import FrankaClient
 
         self._client = FrankaClient(
             server_ip=self._cfg.host,

@@ -155,7 +155,7 @@ class ArmController:
 
     def connect(self) -> None:
         """Connect to FrankaServer via ZMQ."""
-        from franka_server.client import FrankaClient
+        from franka_protocol.client import FrankaClient
         self._client = FrankaClient(
             server_ip=self._server_ip,
             cmd_port=self._cmd_port,
