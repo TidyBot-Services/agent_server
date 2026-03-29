@@ -154,15 +154,17 @@ def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> F
 
         async def _try_sim_reset():
             """Try to soft-reset the sim scene. No-op if sim isn't running."""
-            import aiohttp
+            import urllib.request
             # Try both sim servers — ManiSkill (5500) and RoboCasa (8081)
             for sim_url in ["http://localhost:5500/reset", "http://localhost:8081/reset"]:
                 try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.post(sim_url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
-                            if resp.status == 200:
-                                logger.info("Sim scene soft-reset via %s", sim_url)
-                                return
+                    req = urllib.request.Request(sim_url, data=b'{}',
+                                                headers={"Content-Type": "application/json"},
+                                                method="POST")
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        if resp.status == 200:
+                            logger.info("Sim scene soft-reset via %s", sim_url)
+                            return
                 except Exception:
                     continue
 
