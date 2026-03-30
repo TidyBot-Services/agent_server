@@ -278,7 +278,7 @@ class ArmAPI:
                     return
 
                 if time.time() > settle_deadline:
-                    raise ArmError(f"Timeout: arm did not converge (error={max_error:.3f} rad)")
+                    raise ArmError(f"Timeout: arm did not converge (error={max_error:.3f} rad) — likely hitting an obstacle (table, cabinet, etc)")
 
             time.sleep(command_interval)
 
@@ -390,7 +390,7 @@ class ArmAPI:
                     return
 
                 if time.time() > settle_deadline:
-                    raise ArmError(f"Timeout: arm did not converge (error={pos_error:.4f} m)")
+                    raise ArmError(f"Timeout: arm did not converge (error={pos_error:.4f} m) — likely hitting an obstacle (table, cabinet, etc)")
 
             time.sleep(command_interval)
 
@@ -520,7 +520,7 @@ class ArmAPI:
                     return
 
                 if time.time() > settle_deadline:
-                    raise ArmError(f"Timeout: arm did not converge (error={pos_error:.4f} m)")
+                    raise ArmError(f"Timeout: arm did not converge (error={pos_error:.4f} m) — likely hitting an obstacle (table, cabinet, etc)")
 
             time.sleep(command_interval)
 

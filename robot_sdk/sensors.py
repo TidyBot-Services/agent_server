@@ -268,7 +268,19 @@ class SensorAPI:
         if "error" in result:
             raise SensorError(f"Perception failed: {result['error']}")
 
+        # Store arm base world position if provided by sim
+        if "arm_base" in result:
+            self._arm_base_world = result["arm_base"]
+
         return result.get("objects", [])
+
+    def get_arm_base_world(self) -> Optional[list[float]]:
+        """Get the arm base (panda_link0) position in world frame.
+
+        Available after calling find_objects(). Returns [x, y, z] or None
+        if not yet populated.
+        """
+        return getattr(self, "_arm_base_world", None)
 
     # -- Camera methods ------------------------------------------------------
 
