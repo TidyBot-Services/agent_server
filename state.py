@@ -115,7 +115,7 @@ class StateAggregator:
         if base_pose and self._prev_base_pose:
             if any(abs(a - b) > 0.005 for a, b in zip(base_pose, self._prev_base_pose)):
                 moved = True
-        if base_velocity and any(abs(v) > 0.01 for v in base_velocity):
+        if base_velocity and any(abs(v) > 0.05 for v in base_velocity):
             moved = True
         if self._prev_gripper_pos and abs(gripper_pos - self._prev_gripper_pos) > 0.5:
             moved = True
