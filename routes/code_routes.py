@@ -564,10 +564,21 @@ def init_code_routes(lease_manager: LeaseManager, camera_backend: CameraBackend,
                 state_lines.append(entry)
 
         # Build timeline: match each frame to nearest state
+        # Timestamps are per capture cycle (one per frame index), but frames
+        # list all camera images (multiple per index). Expand timestamps by
+        # extracting the frame index from each filename.
         timeline = []
-        timestamps = metadata.get("timestamps", [])
+        raw_timestamps = metadata.get("timestamps", [])
         frames = metadata.get("frames", [])
-        for i, (frame, t) in enumerate(zip(frames, timestamps)):
+        for frame in frames:
+            # Extract frame index from "0023_base_camera.jpg" -> 23
+            try:
+                fidx = int(frame.split("_", 1)[0])
+            except (ValueError, IndexError):
+                fidx = 0
+            t = raw_timestamps[fidx] if fidx < len(raw_timestamps) else (
+                raw_timestamps[-1] if raw_timestamps else 0.0
+            )
             matched_state = None
             if state_times:
                 idx = bisect.bisect_left(state_times, t)
