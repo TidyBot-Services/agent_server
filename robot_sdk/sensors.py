@@ -282,6 +282,27 @@ class SensorAPI:
         """
         return getattr(self, "_arm_base_world", None)
 
+    def get_task_info(self) -> dict:
+        """Get task information including the natural language prompt.
+
+        Returns:
+            dict with 'task' (env name) and 'lang' (task description).
+            Example: {'task': 'RoboCasa-Pn-P-Counter-To-Cab-v0',
+                      'lang': 'pick the mug from the counter and place it in the cabinet'}
+
+        Example:
+            info = sensors.get_task_info()
+            print(info['lang'])  # "pick the mug from the counter and place it in the cabinet"
+        """
+        import urllib.request
+        planner_url = os.getenv("PLANNER_URL", "http://localhost:5500")
+        url = f"{planner_url}/task/info"
+        try:
+            with urllib.request.urlopen(url, timeout=10) as resp:
+                return json.loads(resp.read())
+        except urllib.error.URLError as e:
+            raise SensorError(f"Task info unavailable at {url}: {e}") from e
+
     # -- Camera methods ------------------------------------------------------
 
     def _camera_headers(self) -> dict:
