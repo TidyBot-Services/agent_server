@@ -313,13 +313,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     </div>
     <div style="margin-top: 12px;">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-        <span class="control-label">Queue (<span id="lease-queue-len">0</span> waiting) <span id="queue-paused-badge" class="status-badge" style="display:none; background:#ff9800; color:#000;">Paused</span></span>
+        <span class="control-label">Job Queue (<span id="job-queue-len">0</span>) <span id="queue-paused-badge" class="status-badge" style="display:none; background:#ff9800; color:#000;">Paused</span></span>
         <div style="display: flex; gap: 6px;">
           <button class="btn-action" id="btn-pause-queue" style="background: #ff9800; color: #000; font-size: 11px; padding: 3px 10px;" onclick="togglePauseQueue(this)">Pause Queue</button>
           <button class="btn-action" id="btn-clear-queue" style="background: #b33; font-size: 11px; padding: 3px 10px;" onclick="clearQueue(this)">Stop &amp; Reset</button>
         </div>
       </div>
-      <ul class="lease-queue-list" id="lease-queue-list">
+      <ul class="lease-queue-list" id="job-queue-list">
         <li style="color: #666; font-style: italic;">Empty</li>
       </ul>
     </div>
@@ -1572,14 +1572,16 @@ async function pollRewindLogs() {
 
 async function pollLease() {
   try {
-    const [leaseResp, rewindResp, codeResp] = await Promise.all([
+    const [leaseResp, rewindResp, codeResp, jobsResp] = await Promise.all([
       fetch("/lease/status"),
       fetch("/rewind/status"),
-      fetch("/code/status")
+      fetch("/code/status"),
+      fetch("/code/jobs")
     ]);
     const data = await leaseResp.json();
     const rewindData = await rewindResp.json();
     const codeData = await codeResp.json();
+    const jobsData = await jobsResp.json();
 
     // Current holder
     const holderEl = document.getElementById("lease-holder");
@@ -1652,17 +1654,22 @@ async function pollLease() {
       pausedBadge.style.display = "none";
     }
 
-    // Queue
-    const queueLen = data.queue_length || 0;
-    document.getElementById("lease-queue-len").textContent = queueLen;
-    document.getElementById("btn-clear-queue").style.display = (queueLen > 0 || data.holder) ? "" : "none";
-    const listEl = document.getElementById("lease-queue-list");
-    if (queueLen === 0) {
+    // Job queue
+    const jobs = jobsData.jobs || [];
+    const activeJobs = jobs.filter(j => j.status === "queued" || j.status === "running");
+    const jobQueueLen = activeJobs.length;
+    document.getElementById("job-queue-len").textContent = jobQueueLen;
+    document.getElementById("btn-clear-queue").style.display = (jobQueueLen > 0 || data.holder) ? "" : "none";
+    const listEl = document.getElementById("job-queue-list");
+    if (jobQueueLen === 0) {
       listEl.innerHTML = '<li style="color: #666; font-style: italic;">Empty</li>';
     } else {
-      listEl.innerHTML = data.queue.map(e =>
-        `<li><span class="lease-queue-pos">#${e.position}</span><span class="lease-queue-name">${e.holder}</span></li>`
-      ).join("");
+      listEl.innerHTML = activeJobs.map(j => {
+        const statusColor = j.status === "running" ? "#4caf50" : "#ff9800";
+        const statusLabel = j.status === "running" ? "RUN" : `#${j.position || "?"}`;
+        const elapsed = j.started_at ? Math.floor((Date.now()/1000 - j.started_at)) + "s" : "";
+        return `<li><span class="lease-queue-pos" style="color:${statusColor}">${statusLabel}</span><span class="lease-queue-name">${j.holder}</span><span style="color:#666;font-size:11px;">${elapsed}</span></li>`;
+      }).join("");
     }
   } catch (e) {
     console.error("Lease poll error:", e);
