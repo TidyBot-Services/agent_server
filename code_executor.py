@@ -693,26 +693,26 @@ dry_run = os.getenv("ROBOT_DRY_RUN", "false").lower() == "true"
 
 franka_config = FrankaBackendConfig(
     host=os.getenv("FRANKA_IP", "localhost"),
-    cmd_port=5555,
-    state_port=5556,
-    stream_port=5557,
+    cmd_port=int(os.getenv("FRANKA_CMD_PORT", "5555")),
+    state_port=int(os.getenv("FRANKA_STATE_PORT", "5556")),
+    stream_port=int(os.getenv("FRANKA_STREAM_PORT", "5557")),
 )
 
 base_config = BaseBackendConfig(
     host=os.getenv("BASE_IP", "localhost"),
-    port=50000,
+    port=int(os.getenv("BASE_PORT", "50000")),
     authkey=b"secret password",
 )
 
 gripper_config = GripperBackendConfig(
     host=os.getenv("GRIPPER_IP", "localhost"),
-    cmd_port=5570,
-    state_port=5571,
+    cmd_port=int(os.getenv("GRIPPER_CMD_PORT", "5570")),
+    state_port=int(os.getenv("GRIPPER_STATE_PORT", "5571")),
 )
 
 mocap_config = MocapBackendConfig(
     host=os.getenv("MOCAP_IP", "localhost"),
-    pub_port=5590,
+    pub_port=int(os.getenv("MOCAP_PUB_PORT", "5590")),
 )
 
 # Create backends

@@ -26,7 +26,11 @@ from backends.cameras import CameraBackend
 from backends.franka import FrankaBackend
 from backends.gripper import GripperBackend
 from backends.mocap import MocapBackend
-from config import LeaseConfig, ServerConfig, ServiceManagerConfig, default_services
+from config import (
+    LeaseConfig, ServerConfig, ServiceManagerConfig, default_services,
+    FrankaBackendConfig, GripperBackendConfig, BaseBackendConfig,
+    CameraBackendConfig, MocapBackendConfig,
+)
 from lease import LeaseManager
 from display_state import DisplayBroadcaster
 from arm_monitor import ArmMonitor
@@ -155,8 +159,10 @@ def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> F
         async def _try_sim_reset():
             """Try to soft-reset the sim scene. No-op if sim isn't running."""
             import urllib.request
-            # Try both sim servers — ManiSkill (5500) and RoboCasa (8081)
-            for sim_url in ["http://localhost:5500/reset", "http://localhost:8081/reset"]:
+            # Derive sim port from agent server port offset
+            _offset = cfg.port - 8080
+            _sim_port = 5500 + _offset
+            for sim_url in [f"http://localhost:{_sim_port}/reset", "http://localhost:8081/reset"]:
                 try:
                     req = urllib.request.Request(sim_url, data=b'{}',
                                                 headers={"Content-Type": "application/json"},
@@ -357,7 +363,13 @@ def main():
         action="store_true",
         help="Disable the web dashboard GUI entirely",
     )
+    parser.add_argument(
+        "--port-offset", type=int, default=0,
+        help="Shift all backend ports by N (for running multiple instances)",
+    )
     args = parser.parse_args()
+
+    offset = args.port_offset
 
     # Build server config
     svc_mgr_cfg = ServiceManagerConfig(
@@ -370,12 +382,42 @@ def main():
 
     cfg = ServerConfig(
         host=args.host,
-        port=args.port,
+        port=args.port if args.port != 8080 else 8080 + offset,
         dry_run=args.dry_run,
         service_manager=svc_mgr_cfg,
         lease=lease_cfg,
         dashboard=not args.no_dashboard,
+        franka=FrankaBackendConfig(
+            cmd_port=5555 + offset,
+            state_port=5556 + offset,
+            stream_port=5557 + offset,
+        ),
+        gripper=GripperBackendConfig(
+            cmd_port=5570 + offset,
+            state_port=5571 + offset,
+        ),
+        base=BaseBackendConfig(
+            port=50000 + offset,
+        ),
+        cameras=CameraBackendConfig(
+            port=5580 + offset,
+        ),
+        mocap=MocapBackendConfig(
+            pub_port=5590 + offset,
+        ),
     )
+
+    # Export port config as env vars for code executor subprocesses
+    if offset:
+        os.environ["FRANKA_CMD_PORT"] = str(cfg.franka.cmd_port)
+        os.environ["FRANKA_STATE_PORT"] = str(cfg.franka.state_port)
+        os.environ["FRANKA_STREAM_PORT"] = str(cfg.franka.stream_port)
+        os.environ["GRIPPER_CMD_PORT"] = str(cfg.gripper.cmd_port)
+        os.environ["GRIPPER_STATE_PORT"] = str(cfg.gripper.state_port)
+        os.environ["BASE_PORT"] = str(cfg.base.port)
+        os.environ["MOCAP_PUB_PORT"] = str(cfg.mocap.pub_port)
+        os.environ["PLANNER_URL"] = f"http://localhost:{5500 + offset}"
+        os.environ["ROBOT_SERVER_URL"] = f"http://localhost:{cfg.port}"
 
     # Create service manager if enabled
     service_mgr = None
