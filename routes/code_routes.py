@@ -604,6 +604,7 @@ def init_code_routes(lease_manager: LeaseManager, camera_backend: CameraBackend,
             "cameras": metadata.get("cameras", []),
             "frame_count": metadata.get("frame_count", 0),
             "state_samples": metadata.get("state_samples", 0),
+            "frames": [t["frame"] for t in timeline],
             "timeline": timeline,
         }
 
