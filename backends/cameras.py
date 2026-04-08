@@ -55,6 +55,10 @@ class CameraBackend:
         self._frame_lock = threading.Lock()
         self._frame_max_age = 2.0  # seconds before considering cached frame stale
 
+        # Reconnect throttle: avoid hammering a dead bridge from get_frame()
+        self._last_reconnect_attempt: float = 0.0
+        self._reconnect_min_interval = 2.0  # seconds between reconnect attempts
+
         # Intrinsics cache (fetched once at startup, before streaming thread)
         self._intrinsics_cache: Dict[str, Dict[str, Any]] = {}  # device_id -> intrinsics
 
@@ -128,7 +132,79 @@ class CameraBackend:
     @property
     def is_connected(self) -> bool:
         """Return True if connected to camera server."""
-        return self._dry_run or self._connected
+        if self._dry_run:
+            return True
+        # Trust the underlying client's connection state — its recv loop
+        # clears _connected when the websocket dies.
+        if self._client is not None and not self._client._connected:
+            self._connected = False
+        return self._connected
+
+    def _maybe_reconnect(self) -> bool:
+        """If the underlying client is disconnected, try to reconnect.
+
+        Throttled to one attempt every _reconnect_min_interval seconds so a
+        dead sim bridge does not block every get_frame() call.
+        Returns True if (re)connected after this call.
+        """
+        if self._dry_run or not self._cfg.enabled or not CAMERA_CLIENT_AVAILABLE:
+            return False
+
+        # Sync our flag with the client's actual state.
+        if self._client is not None and not self._client._connected:
+            self._connected = False
+
+        if self._connected and self._client is not None:
+            return True
+
+        now = time.time()
+        if now - self._last_reconnect_attempt < self._reconnect_min_interval:
+            return False
+        self._last_reconnect_attempt = now
+
+        logger.info("CameraBackend: attempting reconnect to %s:%d",
+                    self._cfg.host, self._cfg.port)
+
+        # Tear down old client cleanly.
+        if self._client is not None:
+            try:
+                self._client.disconnect()
+            except Exception:
+                pass
+            self._client = None
+
+        # Drop stale cached frames so we never serve frames from the dead bridge.
+        with self._frame_lock:
+            self._frame_cache.clear()
+
+        try:
+            self._client = CameraClient(
+                server_ip=self._cfg.host,
+                port=self._cfg.port,
+                timeout=self._cfg.timeout,
+            )
+            if not self._client.connect():
+                self._client = None
+                return False
+
+            self._connected = True
+            self._client.set_frame_callback(self._on_frame)
+            if self._cfg.auto_subscribe:
+                self._client.subscribe(
+                    streams=self._cfg.streams,
+                    device_id="all",
+                    fps=self._cfg.stream_fps,
+                    quality=self._cfg.quality,
+                )
+                self._streaming = True
+            logger.info("CameraBackend: reconnected to %s:%d",
+                        self._cfg.host, self._cfg.port)
+            return True
+        except Exception as e:
+            logger.warning("CameraBackend: reconnect failed: %s", e)
+            self._client = None
+            self._connected = False
+            return False
 
     def _cache_intrinsics(self) -> None:
         """Fetch intrinsics for all cameras and cache them.
@@ -235,17 +311,11 @@ class CameraBackend:
                     if now - ts < self._frame_max_age:
                         return data
 
-        # Cache is stale or empty — fall back to CameraClient's latest_frames
-        # (updated directly by recv thread, no extra callback needed).
-        # Note: DecodedFrame.timestamp is RealSense hardware time, not system time,
-        # so we can't compare it with time.time(). Just use whatever the client has.
-        if self._client and self._connected:
-            decoded = self._client.get_latest_frame("color", device)
-            if decoded is not None:
-                logger.debug("CameraBackend: using CameraClient fallback frame for device=%s", device)
-                jpeg = self._encode_decoded_frame(decoded)
-                if jpeg:
-                    return jpeg
+        # Cache is stale or empty. Do NOT fall back to client.get_latest_frame:
+        # that buffer is never cleared and will return frames from a dead sim
+        # bridge forever. Instead, try to reconnect (throttled) so the next
+        # call has fresh data.
+        self._maybe_reconnect()
 
         logger.debug("CameraBackend: no fresh frame available for device=%s", device)
         return None
@@ -280,25 +350,37 @@ class CameraBackend:
                         if now - ts < self._frame_max_age:
                             return data
 
-        # Fallback to CameraClient's latest decoded frame
-        if self._client and self._connected:
-            decoded = self._client.get_latest_frame(stream, device)
-            if decoded is not None:
-                jpeg = self._encode_decoded_frame(decoded)
-                if jpeg:
-                    return jpeg
-
+        # Cache stale/empty — same reasoning as get_frame, no unsafe fallback.
+        self._maybe_reconnect()
         return None
 
     def get_all_frames(self) -> Dict[str, bytes]:
         """Get all cached color frames (bytes only, no timestamps).
 
+        Stale frames (older than _frame_max_age) are filtered out so the
+        execution recorder never captures frames from a dead sim bridge.
+        Triggers a throttled reconnect attempt if the cache has gone stale.
+
         Returns:
-            Dict of device_id -> JPEG bytes
+            Dict of device_id -> JPEG bytes (only fresh frames)
         """
+        now = time.time()
         with self._frame_lock:
-            return {k: v[0] for k, v in self._frame_cache.items()
-                    if ":" not in k}  # exclude depth entries (device_id:depth)
+            fresh = {
+                k: v[0]
+                for k, v in self._frame_cache.items()
+                if ":" not in k and (now - v[1]) < self._frame_max_age
+            }
+            had_any_cached = any(":" not in k for k in self._frame_cache)
+
+        # If we had cached entries but none are fresh, the bridge is dead.
+        # Try to reconnect (throttled) so subsequent calls get live frames.
+        if had_any_cached and not fresh:
+            self._maybe_reconnect()
+        elif not self._connected:
+            self._maybe_reconnect()
+
+        return fresh
 
     def get_state(self) -> Optional[Dict[str, Any]]:
         """Get camera state.
