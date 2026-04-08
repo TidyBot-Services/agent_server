@@ -61,7 +61,7 @@ class WholeBodyAPI:
         arm_backend: FrankaBackend,
         base_backend: BaseBackend,
         planner_url: str = "http://localhost:5500",
-        command_rate_hz: float = 20.0,
+        command_rate_hz: float = 5.0,
         settle_timeout: float = 5.0,
     ) -> None:
         self._arm = arm_backend

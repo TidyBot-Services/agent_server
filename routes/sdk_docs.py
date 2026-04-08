@@ -103,7 +103,7 @@ def generate_sdk_docs() -> dict:
         "description": "Robot SDK for code execution. Import these modules in submitted code.",
         "modules": {},
         "usage": {
-            "example": """from robot_sdk import arm, base, gripper, sensors, rewind, yolo, wb
+            "example": """from robot_sdk import arm, base, gripper, sensors, rewind, yolo, wb, graspgen
 
 # Move arm
 arm.move_joints([0, -0.785, 0, -2.356, 0, 1.571, 0.785])
@@ -160,6 +160,8 @@ if rewind.is_out_of_bounds():
                 "YOLO segmentation auto-saves visualization to GET /yolo/visualization",
                 "YOLO 3D segmentation uses depth camera for object positions in meters",
                 "YOLO: pass mask_format='npz' to get per-pixel segmentation masks on detections",
+                "GraspGen: generates 6-DOF grasp poses from object point clouds (requires GRASPGEN_SERVER_URL)",
+                "GraspGen: use get_grasp_poses() for single-view, or build_object_point_cloud() + generate_grasps() for multi-view",
             ],
         },
     }
@@ -173,6 +175,7 @@ if rewind.is_out_of_bounds():
         from robot_sdk.rewind import RewindAPI
         from robot_sdk.yolo import YoloAPI
         from robot_sdk.wb import WholeBodyAPI
+        from robot_sdk.graspgen import GraspGenAPI
 
         docs["modules"]["arm"] = {
             "import": "from robot_sdk import arm",
@@ -215,6 +218,18 @@ if rewind.is_out_of_bounds():
             "description": "Whole-body motion — coordinated base + arm movement with collision-free planning",
             **get_class_info(WholeBodyAPI),
         }
+
+        docs["modules"]["graspgen"] = {
+            "import": "from robot_sdk import graspgen",
+            "description": "GraspGen grasp pose prediction — 6-DOF grasps from object point clouds via diffusion model",
+            **get_class_info(GraspGenAPI),
+        }
+
+        # Add GraspGen result types
+        from robot_sdk.graspgen import GraspPose, GraspResult
+        docs["graspgen_types"] = {}
+        for cls in [GraspPose, GraspResult]:
+            docs["graspgen_types"][cls.__name__] = get_dataclass_info(cls)
 
         # Add YOLO result types (auto-introspected from dataclasses)
         from robot_sdk.yolo import Detection, Detection3D, SegmentationResult, SegmentationResult3D

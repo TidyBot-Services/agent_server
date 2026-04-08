@@ -222,7 +222,7 @@ class TimingConfig:
     """
 
     # -- Lease --
-    lease_idle_timeout_s: float = 15.0       # idle time before revoke
+    lease_idle_timeout_s: float = 60.0       # idle time before revoke
     lease_max_duration_s: float = 300.0      # hard cap on any single lease
     lease_check_interval_s: float = 1.0      # how often the lease watchdog ticks
 

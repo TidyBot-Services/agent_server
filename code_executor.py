@@ -681,7 +681,7 @@ from backends.base import BaseBackend
 from backends.gripper import GripperBackend
 from backends.mocap import MocapBackend
 from config import FrankaBackendConfig, BaseBackendConfig, GripperBackendConfig, MocapBackendConfig, TimingConfig
-from robot_sdk import ArmAPI, BaseAPI, GripperAPI, SensorAPI, YoloAPI, WholeBodyAPI
+from robot_sdk import ArmAPI, BaseAPI, GripperAPI, SensorAPI, YoloAPI, WholeBodyAPI, GraspGenAPI
 
 timing = TimingConfig()
 import robot_sdk
@@ -789,6 +789,14 @@ robot_sdk.yolo = YoloAPI(
 )
 print("[SDK] YOLO API initialized")
 
+# Initialize GraspGen API (uses HTTP calls to remote GraspGen server + agent server cameras)
+from robot_sdk.graspgen import GraspGenAPI
+robot_sdk.graspgen = GraspGenAPI(
+    graspgen_server_url=os.getenv("GRASPGEN_SERVER_URL", ""),
+    agent_server_url=server_url,
+)
+print("[SDK] GraspGen API initialized")
+
 # Initialize display API (uses HTTP calls to agent server)
 from robot_sdk.display import DisplayAPI
 robot_sdk.display = DisplayAPI(server_url=server_url)
@@ -816,6 +824,7 @@ gripper = robot_sdk.gripper
 sensors = robot_sdk.sensors
 rewind = robot_sdk.rewind
 yolo = robot_sdk.yolo
+graspgen = robot_sdk.graspgen
 display = robot_sdk.display
 wb = robot_sdk.wb
 http = robot_sdk.http
