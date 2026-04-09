@@ -141,6 +141,16 @@ def generate_guide(app=None) -> dict:
     except ImportError:
         pass
     try:
+        from robot_sdk.wb import WholeBodyAPI
+        sdk_modules.append("wb")
+    except ImportError:
+        pass
+    try:
+        from robot_sdk.graspgen import GraspGenAPI
+        sdk_modules.append("graspgen")
+    except ImportError:
+        pass
+    try:
         from robot_sdk.display import DisplayAPI
         sdk_modules.append("display")
     except ImportError:

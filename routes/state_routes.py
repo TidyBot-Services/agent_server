@@ -129,7 +129,7 @@ def create_router(state_agg, camera_backend, lease_mgr, base_backend, franka_bac
                 "franka": franka_backend.is_connected,
                 "gripper": gripper_backend.is_connected,
                 "cameras": camera_backend.is_connected,
-                "mocap": mocap_backend.is_connected,
+                "mocap": mocap_backend.is_tracking,
             },
         }
 

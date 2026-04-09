@@ -329,10 +329,10 @@ class SensorAPI:
             frame = sensors.get_camera_frame()
             print(f"Got {len(frame)} bytes")
 
-            # Use with YOLO for object detection
-            result = yolo.segment_camera("cup, bottle")
-            for det in result.detections:
-                print(f"{det.class_name}: {det.confidence:.2f}")
+            # Decode to numpy array
+            import cv2, numpy as np
+            img = cv2.imdecode(np.frombuffer(frame, np.uint8), cv2.IMREAD_COLOR)
+            print(f"Shape: {img.shape}")  # (H, W, 3) BGR
         """
         cam = device_id or "any"
         url = f"{self._agent_url}/cameras/{cam}/frame"

@@ -176,6 +176,7 @@ if rewind.is_out_of_bounds():
         from robot_sdk.yolo import YoloAPI
         from robot_sdk.wb import WholeBodyAPI
         from robot_sdk.graspgen import GraspGenAPI
+        from robot_sdk.display import DisplayAPI
 
         docs["modules"]["arm"] = {
             "import": "from robot_sdk import arm",
@@ -223,6 +224,12 @@ if rewind.is_out_of_bounds():
             "import": "from robot_sdk import graspgen",
             "description": "GraspGen grasp pose prediction — 6-DOF grasps from object point clouds via diffusion model",
             **get_class_info(GraspGenAPI),
+        }
+
+        docs["modules"]["display"] = {
+            "import": "from robot_sdk import display",
+            "description": "Robot face display — show text, expressions, and images",
+            **get_class_info(DisplayAPI),
         }
 
         # Add GraspGen result types
