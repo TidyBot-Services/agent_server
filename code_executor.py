@@ -23,7 +23,8 @@ from config import TIMING
 logger = logging.getLogger(__name__)
 
 # Directory for code execution logs and saved scripts
-_LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
+# LOG_DIR env var allows separate log dirs for multi-instance setups
+_LOG_DIR = Path(os.environ.get("LOG_DIR", str(Path(__file__).resolve().parent.parent / "logs")))
 _CODE_DIR = _LOG_DIR / "code_executions"
 
 # Dedicated logger for code execution output (stdout/stderr)

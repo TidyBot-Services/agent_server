@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import threading
 import time
@@ -16,7 +17,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_CODE_DIR = Path(__file__).resolve().parent.parent / "logs" / "code_executions"
+_CODE_DIR = Path(os.environ.get("LOG_DIR", str(Path(__file__).resolve().parent.parent / "logs"))) / "code_executions"
 
 # Capture interval (5 Hz = every 200ms)
 _CAPTURE_INTERVAL = 0.2
