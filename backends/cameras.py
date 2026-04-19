@@ -93,9 +93,13 @@ class CameraBackend:
             self._connected = True
             logger.info("CameraBackend: connected to %s:%d", self._cfg.host, self._cfg.port)
 
-            # NOTE: Skip _cache_intrinsics() here — it calls recv() which
-            # can poison the socket for the recv thread in websockets >=16.
-            # Intrinsics will be fetched on-demand via the intrinsics cache.
+            # Cache intrinsics via direct recv BEFORE starting recv thread.
+            # Must run before subscribe() — once the recv thread is live it
+            # consumes all incoming frames and races any direct recv().
+            try:
+                self._cache_intrinsics()
+            except Exception as e:
+                logger.warning("CameraBackend: _cache_intrinsics failed: %s", e)
 
             # Set up frame callback for caching
             self._client.set_frame_callback(self._on_frame)
@@ -211,7 +215,12 @@ class CameraBackend:
 
         Must be called before subscribe() starts the recv thread.
         """
-        if not self._client or not self._client.latest_state:
+        if not self._client:
+            return
+        # latest_state is populated on first get_state() — trigger it here.
+        if self._client.latest_state is None:
+            self._client.get_state()
+        if not self._client.latest_state:
             return
 
         for cam in self._client.latest_state.cameras:
@@ -453,12 +462,38 @@ class CameraBackend:
 
         # Color/depth intrinsics are cached under bare device_id
         if device_id:
-            return self._intrinsics_cache.get(device_id)
+            cached = self._intrinsics_cache.get(device_id)
+            if cached is not None:
+                return cached
+        else:
+            for k, v in self._intrinsics_cache.items():
+                if ":" not in k:
+                    return v
 
-        # Return first available (skip IR entries)
-        for k, v in self._intrinsics_cache.items():
-            if ":" not in k:
-                return v
+        # Lazy fetch: cache miss (likely ManiSkill sim where bridge wasn't ready
+        # at startup, or the bridge's first response was a state push instead
+        # of the intrinsics payload). Retry up to 3 times and validate the
+        # shape — an intrinsics dict must have fx/fy.
+        logger.info("CameraBackend: lazy-fetch intrinsics device_id=%s client=%s conn=%s",
+                    device_id, self._client is not None, self._connected)
+        if self._client and self._connected:
+            target_id = device_id
+            if target_id is None and self._client.latest_state:
+                cams = self._client.latest_state.cameras
+                if cams:
+                    target_id = cams[0].device_id
+            if target_id:
+                for attempt in range(3):
+                    try:
+                        intrinsics = self._client.get_intrinsics(stream_type, target_id)
+                        logger.info("CameraBackend: lazy-fetch attempt=%d target=%s result_keys=%s",
+                                    attempt, target_id,
+                                    list(intrinsics.keys()) if isinstance(intrinsics, dict) else type(intrinsics).__name__)
+                        if isinstance(intrinsics, dict) and "fx" in intrinsics and "fy" in intrinsics:
+                            self._intrinsics_cache[target_id] = intrinsics
+                            return intrinsics
+                    except Exception as e:
+                        logger.warning("CameraBackend: lazy intrinsics attempt %d failed: %s", attempt, e)
         return None
 
     def get_latest_decoded_frame(

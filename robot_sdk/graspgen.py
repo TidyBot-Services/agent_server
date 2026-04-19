@@ -241,7 +241,7 @@ class GraspGenAPI:
         if camera_id:
             url = f"{self._agent_url}/cameras/{camera_id}/frame?stream=depth"
         else:
-            url = f"{self._agent_url}/cameras/default/frame?stream=depth"
+            url = f"{self._agent_url}/cameras/any/frame?stream=depth"
         try:
             req = urllib.request.Request(url, headers=self._agent_headers())
             with urllib.request.urlopen(req, timeout=10) as resp:
@@ -258,7 +258,7 @@ class GraspGenAPI:
         if camera_id:
             url = f"{self._agent_url}/cameras/{camera_id}/intrinsics"
         else:
-            url = f"{self._agent_url}/cameras/default/intrinsics"
+            url = f"{self._agent_url}/cameras/any/intrinsics"
         try:
             req = urllib.request.Request(url, headers=self._agent_headers())
             with urllib.request.urlopen(req, timeout=5) as resp:
