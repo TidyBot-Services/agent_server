@@ -128,7 +128,7 @@ class JobQueue:
         self._state_agg = state_agg
 
     def submit(self, code: str, holder: str, timeout: float, reset_env: bool = True) -> Job:
-        job_id = str(uuid.uuid4())[:8]
+        job_id = str(uuid.uuid4())[:16]
         job = Job(
             job_id=job_id,
             code=code,
@@ -231,7 +231,7 @@ class JobQueue:
             # Execute code
             executor = get_executor()
             recorder = get_recorder()
-            execution_id = str(uuid.uuid4())[:8]
+            execution_id = str(uuid.uuid4())[:16]
             job.execution_id = execution_id
             timeout = job.timeout or TIMING.code_execution_timeout_s
 
@@ -344,7 +344,7 @@ def init_code_routes(lease_manager: LeaseManager, camera_backend: CameraBackend,
             )
 
         # Generate execution ID
-        execution_id = str(uuid.uuid4())[:8]
+        execution_id = str(uuid.uuid4())[:16]
 
         # Use timeout from request or central default
         timeout = body.timeout if body.timeout is not None else TIMING.code_execution_timeout_s
