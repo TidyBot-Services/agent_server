@@ -247,8 +247,14 @@ class SensorAPI:
             print(f"Nearest: {nearest['name']} at {nearest['distance_m']:.2f}m")
         """
         import urllib.request
-        planner_url = os.getenv("PLANNER_URL", "http://localhost:5500")
-        url = f"{planner_url}/perceive"
+        # PERCEPTION_URL routes /perceive through perception_service (Phase 1
+        # sim_passthrough; future backends: GroundedSAM, YOLO, ensemble).
+        # Falls back to PLANNER_URL → sim's /perceive directly for compat.
+        perception_url = os.getenv(
+            "PERCEPTION_URL",
+            os.getenv("PLANNER_URL", "http://localhost:5500"),
+        )
+        url = f"{perception_url}/perceive"
         body = json.dumps({
             "target_names": target_names,
             "camera_names": camera_names,
