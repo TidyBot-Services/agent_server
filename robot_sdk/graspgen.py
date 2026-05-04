@@ -39,8 +39,47 @@ EE_T_CAMERA = np.array([
     [0.0,  0.0,  0.0,  1.0],
 ], dtype=np.float64)
 
+# Camera mount transform: base_link -> base_camera (head-mounted, pitched down ~15°)
+# From tidyverse_agent.py CameraConfig:
+#   pose = sapien.Pose(p=[0.0, 0.15, 1.5], q=[cos(0.13), 0, sin(0.13), 0])
+#   mount = base_link
+# Quaternion q=[w=cos(0.13), x=0, y=sin(0.13), z=0] = rotation ~14.9° around Y axis.
+# Rotation matrix (from quat wxyz):
+#   [[0.966,  0,  0.257],
+#    [0    ,  1,  0    ],
+#    [-0.257, 0,  0.966]]
+BASE_T_CAMERA = np.array([
+    [ 0.9664,  0.0,  0.2571,  0.0 ],
+    [ 0.0   ,  1.0,  0.0   ,  0.15],
+    [-0.2571,  0.0,  0.9664,  1.5 ],
+    [ 0.0   ,  0.0,  0.0   ,  1.0 ],
+], dtype=np.float64)
+
+# URDF base_fixed joint offset: panda_link0 sits on top of base_link
+# (see franka_tidyverse.urdf / tidyverse.urdf: base_fixed xyz="0 0 0.47225")
+ARM_BASE_Z_OFFSET = 0.47225
+
+# Sapien/ManiSkill camera frame is ROS-style (+X forward, +Y left, +Z up).
+# But depth deprojection here uses OpenGL convention (-Z forward, +Y up, +X right).
+# To convert cam2world_ros → cam2world_gl, right-multiply by POSE_GL_TO_ROS.
+# See maniskill/utils/structs/render_camera.py get_model_matrix():
+#   POSE_GL_TO_ROS = Pose.create_from_pq(p=[0,0,0], q=[-0.5,-0.5,0.5,0.5])
+#   pose = self.get_global_pose() * POSE_GL_TO_ROS  (i.e., ros_T_gl)
+# So cam2world_gl = (world_T_mount @ mount_T_cam_ros) @ POSE_GL_TO_ROS.
+POSE_GL_TO_ROS = np.array([
+    [ 0.0,  0.0, -1.0, 0.0],
+    [-1.0,  0.0,  0.0, 0.0],
+    [ 0.0,  1.0,  0.0, 0.0],
+    [ 0.0,  0.0,  0.0, 1.0],
+], dtype=np.float64)
+
 # Camera FOV (from tidyverse_agent.py: fov=100° horizontal)
 CAMERA_FOV_DEG = 100.0
+
+# Camera device_id -> mount type mapping (determines which world_T_camera formula to use)
+# See tidyverse_agent._sensor_configs: wrist_camera→panda_link8, base_camera→base_link
+WRIST_CAMERA_IDS = {"maniskill_wrist", "wrist_camera", None, "any"}
+BASE_CAMERA_IDS = {"maniskill_base", "base_camera"}
 
 
 @dataclass
@@ -123,7 +162,110 @@ class GraspGenAPI:
         2. Send the point cloud to the GraspGen server
         3. Receive ranked grasp poses (4x4 transforms + confidence scores)
 
-    Example (single-view):
+    -------------------------------------------------------------------------
+    GRASP POSE CONVENTION  (READ THIS BEFORE CONSUMING GraspPose.transform)
+    -------------------------------------------------------------------------
+    The server runs checkpoint `graspgen_robotiq_2f_140`. Per NVlabs/GraspGen
+    `docs/GRIPPER_DESCRIPTION.md` the standard convention is:
+
+      +Z = approach direction (gripper extends INTO object along this axis)
+      +X = finger closing direction
+      grasp pose origin = gripper-body / palm frame (panda_hand in Tidybot)
+
+    What each returned 4x4 transform actually describes (in Tidybot pipeline):
+      Pose of the **panda_hand** link in the SAME frame as the input point
+      cloud (world frame when called via get_grasp_poses() or via
+      build_object_point_cloud()+generate_grasps()).
+
+      i.e.  GraspPose.transform  ==  world_T_panda_hand
+
+      The grasp +Z axis is `panda_hand`'s +Z (which is the approach direction).
+      For a top-down grasp on an object at world_z=0.10, the returned
+      grasp position is roughly above the object with grasp +Z pointing
+      world -Z.
+
+    !! CRITICAL — wb.move_to_pose targets `ee_link`, NOT `panda_hand`  !!
+    The Tidybot planner (cuRobo) is configured with `ee_link: "ee_link"`
+    in `franka_tidyverse.yml`. The planner URDF defines:
+
+        panda_link8 --(yaw -π/4)----> panda_hand
+        panda_hand  --(0, 0, +0.10m)-> ee_link        ← cuRobo IK target
+        panda_hand  --(0, 0, +0.0584)-> panda_leftfinger / panda_rightfinger
+
+    So `ee_link` sits 10 cm forward of `panda_hand` along panda_hand's +Z
+    (which is the same axis as the grasp +Z).
+
+    If you pass `grasp.position` DIRECTLY to wb.move_to_pose():
+      → ee_link goes to grasp.position
+      → panda_hand ends up at grasp.position - 0.10m * grasp_+Z_axis
+      → fingers OVERSHOOT the object by ~10cm
+      → gripper.close() reports position_mm == 0, object_detected == False
+      This is the most common silent grasp failure.
+
+    The fix: ALWAYS push the EE target FORWARD by 0.10m along grasp +Z
+    before calling wb.move_to_pose(). The ee_target_from_grasp() helper
+    below does this — use it.
+
+    Pre-grasp / approach offset:
+      For pre-grasp, back off along grasp -Z (gripper's OWN approach
+      direction, NOT world -Z) — pre_grasp_pose() handles this correctly
+      for both top-down and side grasps. Empirically 0.10 m works
+      (test_graspgen.py).
+
+    Recommended usage (drop-in correct, do not skip ee_target_from_grasp):
+        from robot_sdk import graspgen, wb, gripper
+
+        result = graspgen.get_grasp_poses("cup")
+        for g in result.grasps[:8]:
+            ee  = graspgen.ee_target_from_grasp(g)        # +10cm comp
+            pre = graspgen.pre_grasp_pose(g, offset=0.10) # back off along -Z
+            try:
+                wb.move_to_pose(*pre['xyz'], quat=pre['quat'], mask="whole_body")
+                wb.move_to_pose(*ee['xyz'],  quat=ee['quat'],  mask="arm_only")
+            except Exception:
+                continue
+            gripper.close(force=255)
+            gs = gripper.get_state()
+            held = (5 < gs.get("position_mm", 0) < 65) and \
+                   (gs.get("object_detected") or gs.get("position_mm", 0) > 15)
+            if held:
+                # Lift to confirm grip survives motion
+                lift = list(ee['xyz']); lift[2] += 0.15
+                wb.move_to_pose(*lift, quat=ee['quat'], mask="arm_only")
+                if gripper.get_state().get("position_mm", 0) > 5:
+                    print(f"grasped via candidate {g.confidence:.2f}"); break
+            gripper.open()
+
+    Tuning the EE_LINK_OFFSET_M (`OFFSET_HAND_TO_EE_LINK` below):
+      0.10 m is the URDF nominal. If `pos_mm` is sustained in the 15–35mm
+      range across multiple candidates, the offset is close but not exact.
+      Try sweeping ee_target_from_grasp(g, offset=0.08 / 0.10 / 0.12) for
+      the SAME candidate. If pos_mm is always 0, offset is too small.
+      If pos_mm is always 80+, offset is too big.
+
+    Why not just modify pose.position[2]?
+      pose.position and pose.quaternion are a paired 6-DoF prediction.
+      GraspGen designed them together — the position already accounts for
+      finger length so the gripper hovers above the object before closing.
+      Lowering Z while keeping quat makes the pose self-inconsistent —
+      fingers want to extend below the counter, IK joints clamp to limits,
+      and wb.move_to_pose fails with `Planning failed: IK Failed!`.
+      Use pre_grasp_pose() for clearance, NOT raw Z modification.
+
+    Coordinate frame summary:
+        Input point cloud frame  →  Output grasp transform frame  (same)
+        get_grasp_poses() sends point cloud in WORLD frame, so output is
+        also world frame. generate_grasps(pc) sends `pc` as-is.
+
+    Sources / where to verify:
+        - github.com/NVlabs/GraspGen/blob/main/docs/GRIPPER_DESCRIPTION.md
+          (Z=approach, X=closing convention)
+        - curobo_service/assets/franka_tidyverse.yml line 35 (ee_link target)
+        - curobo_service/assets/robot/franka_description/franka_panda_tidyverse.urdf
+          (panda_hand → ee_link joint `ee_fixed_t`, xyz="0 0 0.1")
+    -------------------------------------------------------------------------
+
+    Example (single-view, simple):
         result = graspgen.get_grasp_poses("cup")
         best = result.grasps[0]
         print(f"Best grasp at {best.position}, confidence={best.confidence:.2f}")
@@ -138,6 +280,16 @@ class GraspGenAPI:
         merged = np.concatenate(all_points, axis=0)
         result = graspgen.generate_grasps(merged)
     """
+
+    # GraspGen convention (NVlabs/GraspGen docs/GRIPPER_DESCRIPTION.md).
+    GRASP_APPROACH_AXIS = np.array([0.0, 0.0, 1.0])  # +Z = approach into object
+    GRASP_CLOSING_AXIS = np.array([1.0, 0.0, 0.0])   # +X = finger closing dir
+
+    # cuRobo planner (franka_panda_tidyverse.urdf) defines:
+    #   panda_hand --(0, 0, +0.10m)--> ee_link
+    # GraspGen returns world_T_panda_hand, but wb.move_to_pose targets ee_link.
+    # ee_target_from_grasp() pushes the EE forward by this much along grasp +Z.
+    OFFSET_HAND_TO_EE_LINK = 0.10
 
     def __init__(
         self,
@@ -183,6 +335,73 @@ class GraspGenAPI:
         # EE target = desired camera position - camera offset
         ee_target = cam_target - cam_offset_world
         return ee_target.tolist()
+
+    @classmethod
+    def ee_target_from_grasp(cls, grasp: "GraspPose",
+                             offset: Optional[float] = None) -> Dict[str, list]:
+        """Convert a GraspPose into an EE target consumable by wb / arm.move_to_pose().
+
+        IMPORTANT: GraspGen returns the **panda_hand** pose, but cuRobo's IK
+        targets **ee_link**, which is panda_hand + 0.10m along panda_hand's +Z
+        (= grasp's +Z). This helper pushes the EE target forward by 0.10m
+        along grasp +Z so that, after IK, panda_hand ends up at grasp.position
+        and the fingers close around the object correctly.
+
+        WITHOUT this compensation, the gripper overshoots by ~10cm and
+        gripper.close() reports position_mm == 0 (silent grasp failure).
+
+        Args:
+            grasp: A GraspPose returned by get_grasp_poses() or generate_grasps()
+            offset: Hand-to-ee_link distance in meters (default
+                    OFFSET_HAND_TO_EE_LINK = 0.10). Override if URDF changes
+                    or for empirical tuning (try 0.08 / 0.10 / 0.12).
+
+        Returns:
+            {'xyz': [x, y, z], 'quat': [qw, qx, qy, qz]} ready to splat into
+            wb.move_to_pose(*ee['xyz'], quat=ee['quat'], ...).
+            Same orientation as `grasp`, position pushed +offset along grasp +Z.
+
+        Example:
+            ee = graspgen.ee_target_from_grasp(result.grasps[0])
+            wb.move_to_pose(*ee['xyz'], quat=ee['quat'], mask="arm_only")
+        """
+        if offset is None:
+            offset = cls.OFFSET_HAND_TO_EE_LINK
+        approach_world = grasp.transform[:3, :3] @ cls.GRASP_APPROACH_AXIS
+        ee_pos = (np.array(grasp.position) + offset * approach_world).tolist()
+        return {"xyz": ee_pos, "quat": list(grasp.quaternion)}
+
+    @classmethod
+    def pre_grasp_pose(cls, grasp: "GraspPose",
+                       offset: float = 0.10) -> Dict[str, list]:
+        """Compute a pre-grasp EE target by backing off along the grasp's -Z (approach) axis.
+
+        The pre-grasp sits `offset` meters BEFORE the grasp pose, along the
+        gripper's own approach direction (NOT world -Z). This is the correct
+        way to do a "pull back from the object first" — using world Z would
+        be wrong for any non-top-down grasp orientation (e.g. side grasps).
+
+        Args:
+            grasp: A GraspPose returned by get_grasp_poses() or generate_grasps()
+            offset: Backoff distance in meters along grasp -Z (default 0.10).
+                    0.10 m is the empirically-validated value used in
+                    test_graspgen.py.
+
+        Returns:
+            {'xyz': [x, y, z], 'quat': [qw, qx, qy, qz]} — same orientation
+            as `grasp`, position shifted by -offset along grasp's approach axis.
+
+        Example:
+            pre = graspgen.pre_grasp_pose(grasp, offset=0.10)
+            ee = graspgen.ee_target_from_grasp(grasp)
+            wb.move_to_pose(*pre['xyz'], quat=pre['quat'], mask="whole_body")
+            wb.move_to_pose(*ee['xyz'],  quat=ee['quat'],  mask="arm_only")
+            gripper.close(force=255)
+        """
+        # Approach axis in world frame = grasp_R @ [0, 0, 1]
+        approach_world = grasp.transform[:3, :3] @ cls.GRASP_APPROACH_AXIS
+        pre_pos = (np.array(grasp.position) - offset * approach_world).tolist()
+        return {"xyz": pre_pos, "quat": list(grasp.quaternion)}
 
     def health_check(self) -> bool:
         """Check if the GraspGen server is reachable.
@@ -353,6 +572,135 @@ class GraspGenAPI:
         except (urllib.error.HTTPError, urllib.error.URLError) as e:
             raise GraspGenError(f"Failed to get EE pose: {e}") from e
 
+    def _fetch_camera_world_pose(self, camera_id: Optional[str]) -> np.ndarray:
+        """Return world_T_camera (4,4) for the given camera mount.
+
+        Dispatches on camera_id to use the correct mount chain:
+          wrist camera (default): world_T_ee @ EE_T_CAMERA
+          base camera:             world_T_base @ BASE_T_CAMERA
+
+        Args:
+            camera_id: device_id like "maniskill_wrist", "maniskill_base", or None/any
+
+        Returns:
+            (4, 4) world_T_camera
+        """
+        if camera_id in BASE_CAMERA_IDS:
+            # Base camera mounted on base_link
+            # Recover base_link world pose: arm_base (panda_link0 world) - (0,0,Z_OFFSET)
+            try:
+                planner_url = os.getenv("PLANNER_URL", "http://localhost:5500")
+                req = urllib.request.Request(
+                    f"{planner_url}/perceive",
+                    data=json.dumps({"target_names": []}).encode(),
+                    headers={"Content-Type": "application/json"}, method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    perceive = json.loads(resp.read())
+                arm_base_pos = perceive.get("arm_base")
+                arm_base_quat = perceive.get("arm_base_quat")  # wxyz
+            except Exception as e:
+                raise GraspGenError(f"Failed to get arm_base for base camera: {e}") from e
+            if arm_base_pos is None:
+                raise GraspGenError("arm_base missing from /perceive — cannot place base camera")
+
+            # Base rotation = arm_base rotation (fixed joint, no relative rotation)
+            if arm_base_quat is not None:
+                qw, qx, qy, qz = arm_base_quat
+                R_base = np.array([
+                    [1-2*(qy*qy+qz*qz), 2*(qx*qy-qz*qw), 2*(qx*qz+qy*qw)],
+                    [2*(qx*qy+qz*qw), 1-2*(qx*qx+qz*qz), 2*(qy*qz-qx*qw)],
+                    [2*(qx*qz-qy*qw), 2*(qy*qz+qx*qw), 1-2*(qx*qx+qy*qy)],
+                ], dtype=np.float64)
+            else:
+                R_base = np.eye(3)
+
+            # Base link world translation = arm_base - R_base @ (0,0,Z_OFFSET)
+            offset_world = R_base @ np.array([0.0, 0.0, ARM_BASE_Z_OFFSET])
+            base_world_pos = np.array(arm_base_pos[:3]) - offset_world
+
+            world_T_base = np.eye(4)
+            world_T_base[:3, :3] = R_base
+            world_T_base[:3, 3] = base_world_pos
+
+            # world_T_base @ BASE_T_CAMERA gives cam2world in sapien's ROS convention.
+            # Apply POSE_GL_TO_ROS to convert to OpenGL convention used by downstream
+            # deprojection (matches ManiSkill's get_model_matrix()).
+            cam2world_ros = world_T_base @ BASE_T_CAMERA
+            cam2world = cam2world_ros @ POSE_GL_TO_ROS
+            print(f"[GraspGen] base_link world=({base_world_pos[0]:.3f},{base_world_pos[1]:.3f},{base_world_pos[2]:.3f}), "
+                  f"base_camera world=({cam2world[0,3]:.3f},{cam2world[1,3]:.3f},{cam2world[2,3]:.3f})")
+            return cam2world
+
+        # Default: wrist camera — same GL_TO_ROS conversion needed
+        world_T_ee = self._fetch_ee_pose()
+        cam2world_ros = world_T_ee @ self._ee_T_camera
+        return cam2world_ros @ POSE_GL_TO_ROS
+
+    def _segment_object_sim(
+        self,
+        camera_id: Optional[str],
+        object_name: str,
+    ) -> Optional[np.ndarray]:
+        """Ask the sim server for a ground-truth segmentation mask for `object_name`.
+
+        This is a sim-only path that bypasses GroundedSAM entirely — it uses the
+        sim's per-pixel segmentation_id_map to produce a binary mask directly
+        from the renderer. Returns None if the sim doesn't have a matching
+        object or the endpoint isn't available (e.g. on real hardware).
+
+        Args:
+            camera_id: device_id; maps to sim camera name (maniskill_base → base_camera,
+                       maniskill_wrist → wrist_camera)
+            object_name: exact or substring match against sim's actor names
+
+        Returns:
+            (H, W) float32 mask in [0, 1], or None if not available
+        """
+        # Map device_id → sim camera name
+        cam_name_map = {
+            "maniskill_base": "base_camera",
+            "maniskill_wrist": "wrist_camera",
+            "base_camera": "base_camera",
+            "wrist_camera": "wrist_camera",
+            None: "base_camera",
+            "any": "base_camera",
+        }
+        cam_name = cam_name_map.get(camera_id, "base_camera")
+
+        planner_url = os.getenv("PLANNER_URL", "http://localhost:5500")
+        payload = json.dumps({"camera_name": cam_name, "object_name": object_name}).encode()
+        req = urllib.request.Request(
+            f"{planner_url}/object_mask",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                result = json.loads(resp.read())
+        except Exception as e:
+            # Endpoint unavailable (e.g. real HW, old sim build) — caller should fall back
+            print(f"[GraspGen] sim /object_mask not available: {e}")
+            return None
+
+        if not result.get("found"):
+            print(f"[GraspGen] sim seg: {object_name!r} not found in "
+                  f"{cam_name}: {result.get('error', '?')}")
+            return None
+
+        import base64
+        import cv2
+        png_bytes = base64.b64decode(result["mask_png_b64"])
+        png_arr = np.frombuffer(png_bytes, np.uint8)
+        mask_u8 = cv2.imdecode(png_arr, cv2.IMREAD_GRAYSCALE)
+        if mask_u8 is None:
+            return None
+        mask = mask_u8.astype(np.float32) / 255.0
+        print(f"[GraspGen] sim seg: {object_name!r} → {result['mask_pixels']} pixels "
+              f"(seg_id={result['seg_id']}, cam={cam_name})")
+        return mask
+
     def _segment_object_groundedsam(
         self,
         image_bytes: bytes,
@@ -456,12 +804,15 @@ class GraspGenAPI:
             # Wait for the server to finish writing the masks file
             time.sleep(1.0)
 
-            # Use scp to fetch the masks file
+            # Use scp to fetch the masks file.
+            # timeout=60 accommodates Penn VPN SSH handshake (~20-30s without
+            # ControlMaster). ~/.ssh/config reuses the master connection
+            # when available, dropping subsequent calls to ~2-6s.
             masks_local = tempfile.mktemp(suffix=".npy")
             result = subprocess.run(
-                ["scp", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5",
+                ["scp", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10",
                  f"exx:{masks_remote}", masks_local],
-                capture_output=True, timeout=15,
+                capture_output=True, timeout=60,
             )
             if result.returncode != 0:
                 raise GraspGenError(f"Failed to fetch masks from exx: {result.stderr.decode()}")
@@ -515,11 +866,16 @@ class GraspGenAPI:
             pc, world_T_cam = graspgen.build_object_point_cloud("cup")
             world_pc = (world_T_cam[:3, :3] @ pc.T + world_T_cam[:3, 3:4]).T
         """
-        # 1. Fetch RGB and run segmentation (GroundedSAM on exx)
-        rgb_bytes = self._fetch_camera_frame(camera_id)
-        mask = self._segment_object_groundedsam(rgb_bytes, object_name)
+        # 1. Try sim ground-truth segmentation first (bypasses GroundedSAM domain gap).
+        # Falls back to GroundedSAM if sim endpoint unavailable (e.g. real HW).
+        mask = self._segment_object_sim(camera_id, object_name)
         if mask is None:
-            raise GraspGenError(f"Object '{object_name}' not detected by GroundedSAM")
+            rgb_bytes = self._fetch_camera_frame(camera_id)
+            mask = self._segment_object_groundedsam(rgb_bytes, object_name)
+        if mask is None:
+            raise GraspGenError(
+                f"Object '{object_name}' not detected (sim seg + GroundedSAM both failed)"
+            )
 
         # 2. Fetch depth
         depth_bytes = self._fetch_depth_frame(camera_id)
@@ -556,9 +912,14 @@ class GraspGenAPI:
         depth_m = depth.astype(np.float64) * depth_scale
         binary_mask = mask > 0.5
 
-        # 7. Compute camera-to-world transform (cam2world in OpenGL convention)
-        world_T_ee = self._fetch_ee_pose()
-        cam2world_gl = world_T_ee @ self._ee_T_camera
+        # 7. Compute camera-to-world transform (cam2world in OpenGL convention).
+        # Dispatches on camera_id to use correct mount chain (wrist vs base).
+        cam2world_gl = self._fetch_camera_world_pose(camera_id)
+        # Keep world_T_ee for debug print (may be stale for base camera, kept for backwards-compat log only)
+        try:
+            world_T_ee = self._fetch_ee_pose()
+        except Exception:
+            world_T_ee = np.eye(4)
 
         # Deproject all valid depth pixels first (OpenGL convention)
         all_valid = (depth_m > 0.05) & (depth_m < 1.5)
