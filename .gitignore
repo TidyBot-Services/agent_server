@@ -2,10 +2,12 @@ __pycache__/
 *.pyc
 *.egg-info/
 .env
+.env.bak-*
 
 # Runtime files
 .agent_server_pids.json
 *.log
+logs/
 
 # Runtime data
 service_clients/
