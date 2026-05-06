@@ -348,6 +348,70 @@ class BaseAPI:
         except BaseBackendError as e:
             raise BaseError(f"Failed to stop base: {e}") from e
 
+    def plan_path(
+        self,
+        x: float,
+        y: float,
+        theta: float,
+        *,
+        timeout: float = 30.0,
+    ) -> dict:
+        """Plan a collision-free base path to (x, y, theta) — sim only.
+
+        Routes the base around all kitchen-fixture cuboids using an A*
+        grid planner (deterministic, ~10ms-1s). Returns waypoints in qpos
+        / local frame. For moves greater than ~0.3m or any move that
+        could cross a fixture, prefer this over chaining ``base.forward``
+        or raw ``base.move_to_pose`` calls.
+
+        The endpoint lives on the sim server (port 5500), which forwards
+        the live cuRobo cuboid set to the standalone base_planner_service
+        (port 6100) and returns the result. On hardware (no sim running)
+        this raises BaseError — fall back to ``move_to_pose`` directly.
+
+        Args:
+            x, y, theta: Goal pose in qpos / local frame (same frame as
+                ``base.move_to_pose``).
+            timeout: HTTP timeout, seconds.
+
+        Returns:
+            Dict with keys:
+                status: "success" | "no_path" | "start_in_collision"
+                        | "goal_in_collision"
+                trajectory: list of [x, y, theta] waypoints (empty on
+                    failure)
+                waypoint_count: int
+
+        Raises:
+            BaseError: If sim /plan_base is unreachable (no sim running).
+
+        Example:
+            result = base.plan_path(0.5, -0.4, 0.0)
+            if result["status"] == "success":
+                for wp in result["trajectory"]:
+                    base.move_to_pose(wp[0], wp[1], wp[2])
+            else:
+                # status tells you why: e.g. "goal_in_collision"
+                print("plan failed:", result["status"])
+        """
+        import urllib.request as _ur, urllib.error as _ue, json as _json
+        body = _json.dumps(
+            {"target": [float(x), float(y), float(theta)]}
+        ).encode()
+        req = _ur.Request(
+            "http://localhost:5500/plan_base",
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            resp = _ur.urlopen(req, timeout=timeout)
+            return _json.loads(resp.read())
+        except _ue.URLError as e:
+            raise BaseError(
+                f"plan_path: sim /plan_base unreachable ({e}). "
+                "On hardware, use base.move_to_pose directly."
+            ) from e
+
     @staticmethod
     def _normalize_angle(angle: float) -> float:
         """Normalize angle to [-pi, pi]."""
