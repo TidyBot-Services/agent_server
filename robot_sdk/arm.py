@@ -325,11 +325,18 @@ class ArmAPI:
         # Extract current rotation
         current_rot = self._extract_rot(current_pose)
 
-        # For orientation, if any RPY is specified, use them; otherwise keep current rotation
+        # For orientation: each unspecified RPY axis falls back to the *current*
+        # value of that axis (extracted from the live arm pose), NOT to zero.
+        # The previous implementation defaulted unspecified axes to 0, which
+        # meant calling move_to_pose(..., pitch=-pi/2) silently reset roll and
+        # yaw to 0 — flipping the gripper into a sideways orientation that
+        # didn't match the caller's intent. Now partial overrides preserve the
+        # other axes.
         if roll is not None or pitch is not None or yaw is not None:
-            r = roll if roll is not None else 0.0
-            p = pitch if pitch is not None else 0.0
-            y_angle = yaw if yaw is not None else 0.0
+            cur_r, cur_p, cur_y = self._matrix_to_rpy(current_rot)
+            r = roll  if roll  is not None else cur_r
+            p = pitch if pitch is not None else cur_p
+            y_angle = yaw if yaw is not None else cur_y
             target_rot = self._rpy_to_matrix(r, p, y_angle)
         else:
             target_rot = current_rot.copy()
@@ -652,6 +659,28 @@ class ArmAPI:
             [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
             [-sp, cp * sr, cp * cr],
         ])
+
+    @staticmethod
+    def _matrix_to_rpy(R: np.ndarray) -> tuple[float, float, float]:
+        """Inverse of _rpy_to_matrix — extract (roll, pitch, yaw) from a 3x3
+        rotation matrix using the same Z-Y-X (yaw-pitch-roll) convention.
+
+        Used by move_to_pose to preserve current axes when only some of
+        roll/pitch/yaw are specified by the caller.
+        """
+        # pitch = arcsin(-R[2,0]); guard against gimbal lock at |pitch|=π/2
+        sp = -R[2, 0]
+        sp = float(np.clip(sp, -1.0, 1.0))
+        pitch = float(np.arcsin(sp))
+        cp = np.cos(pitch)
+        if abs(cp) > 1e-6:
+            roll = float(np.arctan2(R[2, 1], R[2, 2]))
+            yaw = float(np.arctan2(R[1, 0], R[0, 0]))
+        else:
+            # Gimbal lock — pitch ≈ ±π/2. Fall back to roll=0, yaw absorbs.
+            roll = 0.0
+            yaw = float(np.arctan2(-R[0, 1], R[1, 1]))
+        return roll, pitch, yaw
 
     @staticmethod
     def _mat_to_quat(R: np.ndarray) -> np.ndarray:
