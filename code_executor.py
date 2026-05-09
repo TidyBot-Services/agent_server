@@ -562,6 +562,19 @@ class CodeExecutor:
         )
         self._log_execution_output(result)
 
+        # Write stdout/stderr to the execution recording directory so
+        # downstream consumers (e.g. evaluator agents that browse
+        # logs/code_executions/<exec_id>/) can read them as files.
+        # ExecutionRecorder creates this dir for camera frames; we add
+        # the captured streams alongside.
+        try:
+            exec_dir = _CODE_DIR / execution_id
+            if exec_dir.is_dir():
+                (exec_dir / "stdout.log").write_text(result.stdout or "", encoding="utf-8")
+                (exec_dir / "stderr.log").write_text(result.stderr or "", encoding="utf-8")
+        except Exception as _exc:
+            logger.warning(f"Failed to write stdout/stderr to {execution_id} dir: {_exc}")
+
         return result
 
     def stop(self, reason: str = "manual") -> bool:
