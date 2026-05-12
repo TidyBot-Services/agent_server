@@ -1,6 +1,10 @@
 """Auto-generated SDK documentation endpoint.
 
 Introspects the robot_sdk module at runtime to generate accurate documentation.
+
+Capability-gated: modules whose backing hardware / service is disabled in the
+active robot profile are omitted from the docs. This way an LLM agent reading
+`/code/sdk` on a single-arm workstation simply doesn't see `base`, `wb`, etc.
 """
 
 from __future__ import annotations
@@ -12,6 +16,8 @@ from typing import Any, Optional
 
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
+
+from robot_profile import RobotProfile
 
 logger = logging.getLogger(__name__)
 
@@ -96,8 +102,17 @@ def get_dataclass_info(cls: type) -> dict:
     }
 
 
-def generate_sdk_docs() -> dict:
-    """Generate SDK documentation by introspecting robot_sdk module."""
+def generate_sdk_docs(profile: Optional[RobotProfile] = None) -> dict:
+    """Generate SDK documentation by introspecting robot_sdk module.
+
+    Args:
+        profile: Robot capability profile. If None, loads from ROBOT_PROFILE
+            env var (or defaults to "full"). Modules whose required capabilities
+            are not enabled are omitted from the output.
+    """
+    if profile is None:
+        profile = RobotProfile.load()
+
     docs = {
         "version": "1.1.0",
         "description": "Robot SDK for code execution. Import these modules in submitted code.",
@@ -178,71 +193,49 @@ if rewind.is_out_of_bounds():
         from robot_sdk.graspgen import GraspGenAPI
         from robot_sdk.display import DisplayAPI
 
-        docs["modules"]["arm"] = {
-            "import": "from robot_sdk import arm",
-            "description": "Arm control - joint and cartesian movements",
-            **get_class_info(ArmAPI),
-        }
+        # Records: (module_name, required_capability, api_class, description)
+        # Modules where required_capability resolves to True via profile.has()
+        # are included in the output. "always" means unconditionally included.
+        _module_specs = [
+            ("arm",      "arm",               ArmAPI,       "Arm control - joint and cartesian movements"),
+            ("base",     "base",              BaseAPI,      "Mobile base control - position and velocity"),
+            ("gripper",  "gripper",           GripperAPI,   "Gripper control - open, close, grasp"),
+            # Sensors is intentionally always exposed — it has many arm-state
+            # methods that are useful even when base/perception are off. The
+            # base-specific methods (get_base_pose, find_objects, etc.) will
+            # raise at call time if their backend is missing.
+            ("sensors",  "always",            SensorAPI,    "Read-only sensor access - arm, base, gripper state, camera frames, stereo IR pairs"),
+            # Rewind works for whatever component is present (the SDK already
+            # takes a `components=` filter). Exposed whenever arm exists.
+            ("rewind",   "arm",               RewindAPI,    "Trajectory reversal for error recovery - rewind arm and base together"),
+            ("yolo",     "yolo_service",      YoloAPI,      "YOLO object detection and segmentation using camera frames"),
+            ("wb",       "whole_body",        WholeBodyAPI, "Whole-body motion — coordinated base + arm movement with collision-free planning"),
+            ("graspgen", "graspgen_service",  GraspGenAPI,  "GraspGen grasp pose prediction — 6-DOF grasps from object point clouds via diffusion model"),
+            ("display",  "display",           DisplayAPI,   "Robot face display — show text, expressions, and images"),
+        ]
 
-        docs["modules"]["base"] = {
-            "import": "from robot_sdk import base",
-            "description": "Mobile base control - position and velocity",
-            **get_class_info(BaseAPI),
-        }
+        for module_name, capability, api_cls, description in _module_specs:
+            if capability != "always" and not profile.has(capability):
+                continue
+            docs["modules"][module_name] = {
+                "import": f"from robot_sdk import {module_name}",
+                "description": description,
+                **get_class_info(api_cls),
+            }
 
-        docs["modules"]["gripper"] = {
-            "import": "from robot_sdk import gripper",
-            "description": "Gripper control - open, close, grasp",
-            **get_class_info(GripperAPI),
-        }
+        # Add GraspGen result types (only if graspgen module is exposed)
+        if profile.has("graspgen_service"):
+            from robot_sdk.graspgen import GraspPose, GraspResult
+            docs["graspgen_types"] = {}
+            for cls in [GraspPose, GraspResult]:
+                docs["graspgen_types"][cls.__name__] = get_dataclass_info(cls)
 
-        docs["modules"]["sensors"] = {
-            "import": "from robot_sdk import sensors",
-            "description": "Read-only sensor access - arm, base, gripper state, camera frames, stereo IR pairs",
-            **get_class_info(SensorAPI),
-        }
-
-        docs["modules"]["rewind"] = {
-            "import": "from robot_sdk import rewind",
-            "description": "Trajectory reversal for error recovery - rewind arm and base together",
-            **get_class_info(RewindAPI),
-        }
-
-        docs["modules"]["yolo"] = {
-            "import": "from robot_sdk import yolo",
-            "description": "YOLO object detection and segmentation using camera frames",
-            **get_class_info(YoloAPI),
-        }
-
-        docs["modules"]["wb"] = {
-            "import": "from robot_sdk import wb",
-            "description": "Whole-body motion — coordinated base + arm movement with collision-free planning",
-            **get_class_info(WholeBodyAPI),
-        }
-
-        docs["modules"]["graspgen"] = {
-            "import": "from robot_sdk import graspgen",
-            "description": "GraspGen grasp pose prediction — 6-DOF grasps from object point clouds via diffusion model",
-            **get_class_info(GraspGenAPI),
-        }
-
-        docs["modules"]["display"] = {
-            "import": "from robot_sdk import display",
-            "description": "Robot face display — show text, expressions, and images",
-            **get_class_info(DisplayAPI),
-        }
-
-        # Add GraspGen result types
-        from robot_sdk.graspgen import GraspPose, GraspResult
-        docs["graspgen_types"] = {}
-        for cls in [GraspPose, GraspResult]:
-            docs["graspgen_types"][cls.__name__] = get_dataclass_info(cls)
-
-        # Add YOLO result types (auto-introspected from dataclasses)
-        from robot_sdk.yolo import Detection, Detection3D, SegmentationResult, SegmentationResult3D
-        docs["yolo_types"] = {}
-        for cls in [Detection, SegmentationResult, Detection3D, SegmentationResult3D]:
-            docs["yolo_types"][cls.__name__] = get_dataclass_info(cls)
+        # Add YOLO result types (only if yolo module is exposed)
+        if profile.has("yolo_service"):
+            from robot_sdk.yolo import Detection, Detection3D, SegmentationResult, SegmentationResult3D
+            docs["yolo_types"] = {}
+            for cls in [Detection, SegmentationResult, Detection3D, SegmentationResult3D]:
+                docs["yolo_types"][cls.__name__] = get_dataclass_info(cls)
 
         # Add constants
         docs["constants"] = {
@@ -261,9 +254,10 @@ if rewind.is_out_of_bounds():
             },
         }
 
-        # Add direct backend access info
-        docs["advanced"] = {
-            "franka_backend": {
+        # Add direct backend access info (gated by profile)
+        docs["advanced"] = {}
+        if profile.has("arm"):
+            docs["advanced"]["franka_backend"] = {
                 "description": "Direct access to Franka arm backend (like rewind uses)",
                 "available_in_code": True,
                 "example": """# Direct backend access
@@ -280,8 +274,9 @@ state = franka_backend.get_state()
                     "get_state() -> dict",
                     "emergency_stop()",
                 ],
-            },
-            "base_backend": {
+            }
+        if profile.has("base"):
+            docs["advanced"]["base_backend"] = {
                 "description": "Direct access to mobile base backend",
                 "available_in_code": True,
                 "methods": [
@@ -290,8 +285,9 @@ state = franka_backend.get_state()
                     "get_state() -> dict",
                     "stop()",
                 ],
-            },
-            "gripper_backend": {
+            }
+        if profile.has("gripper"):
+            docs["advanced"]["gripper_backend"] = {
                 "description": "Direct access to gripper backend",
                 "available_in_code": True,
                 "methods": [
@@ -303,8 +299,7 @@ state = franka_backend.get_state()
                     "stop()",
                     "get_state() -> dict",
                 ],
-            },
-        }
+            }
 
     except ImportError as e:
         docs["error"] = f"Failed to import SDK modules: {e}"

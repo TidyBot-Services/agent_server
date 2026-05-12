@@ -1,0 +1,27 @@
+# Single-arm FR3 workstation profile — Franka FR3 arm only, no mobile base.
+#
+# Hardware: Franka Production FR3 (via arm_franka_fr3_service / libfranka 0.13.3).
+# Optional add-ons: Robotiq 2F-85 gripper, RealSense camera on EE.
+#
+# Disabled capabilities cause:
+#   - agent_server skips connecting that backend at startup
+#   - /code/sdk filters those modules out of the docs given to agents
+#   - robot_sdk installs a CapabilityStub that raises CapabilityNotAvailableError
+#     if the agent imports and calls into a disabled module anyway
+
+name: single_arm_fr3
+
+# Backends — only arm is required; gripper/camera are present in this setup
+arm: true
+gripper: true
+camera: true
+
+# Explicitly disabled — no mobile base, no mocap on this workstation
+base: false
+mocap: false
+
+# External services — single-arm workstation runs in isolation, no sim/GPU services
+perception_server: false
+yolo_service: false
+graspgen_service: false
+display: false

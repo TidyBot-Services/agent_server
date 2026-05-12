@@ -51,6 +51,15 @@ logger = setup_logging("agent_server")
 def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> FastAPI:
     app = FastAPI(title="TidyBot Hardware Server")
 
+    # Publish robot profile capabilities to env so subprocesses (code executor,
+    # SDK runs) inherit the same gating decisions via ROBOT_CAPABILITIES.
+    os.environ.update(cfg.profile.as_env_dict())
+    logger.info(
+        "Robot profile: %s (disabled capabilities: %s)",
+        cfg.profile.name,
+        cfg.profile.disabled_capabilities() or "none",
+    )
+
     # -- CORS (allow dashboard on other ports to fetch recordings) -----------
     from fastapi.middleware.cors import CORSMiddleware
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -222,31 +231,50 @@ def build_app(cfg: ServerConfig, service_mgr: ServiceManager | None = None) -> F
         if service_mgr is not None:
             await service_mgr.start()
 
-        # Connect to backends - failures are logged but don't crash the server
-        try:
-            await base_backend.connect()
-        except Exception as e:
-            logger.error("Failed to connect to base backend: %s", e)
+        # Connect to backends - failures are logged but don't crash the server.
+        # Backends disabled by the robot profile are skipped entirely (avoids
+        # misleading "Failed to connect" log spam on single-arm workstations etc.)
+        profile = cfg.profile
 
-        try:
-            await franka_backend.connect()
-        except Exception as e:
-            logger.error("Failed to connect to franka backend: %s", e)
+        if profile.has("base"):
+            try:
+                await base_backend.connect()
+            except Exception as e:
+                logger.error("Failed to connect to base backend: %s", e)
+        else:
+            logger.info("Skipping base backend (disabled by profile %r)", profile.name)
 
-        try:
-            await gripper_backend.connect()
-        except Exception as e:
-            logger.error("Failed to connect to gripper backend: %s", e)
+        if profile.has("arm"):
+            try:
+                await franka_backend.connect()
+            except Exception as e:
+                logger.error("Failed to connect to franka backend: %s", e)
+        else:
+            logger.info("Skipping franka backend (disabled by profile %r)", profile.name)
 
-        try:
-            await camera_backend.start()
-        except Exception as e:
-            logger.error("Failed to start camera backend: %s", e)
+        if profile.has("gripper"):
+            try:
+                await gripper_backend.connect()
+            except Exception as e:
+                logger.error("Failed to connect to gripper backend: %s", e)
+        else:
+            logger.info("Skipping gripper backend (disabled by profile %r)", profile.name)
 
-        try:
-            await mocap_backend.connect()
-        except Exception as e:
-            logger.error("Failed to connect to mocap backend: %s", e)
+        if profile.has("camera"):
+            try:
+                await camera_backend.start()
+            except Exception as e:
+                logger.error("Failed to start camera backend: %s", e)
+        else:
+            logger.info("Skipping camera backend (disabled by profile %r)", profile.name)
+
+        if profile.has("mocap"):
+            try:
+                await mocap_backend.connect()
+            except Exception as e:
+                logger.error("Failed to connect to mocap backend: %s", e)
+        else:
+            logger.info("Skipping mocap backend (disabled by profile %r)", profile.name)
 
         await state_agg.start()
         await lease_mgr.start()
@@ -367,7 +395,21 @@ def main():
         "--port-offset", type=int, default=0,
         help="Shift all backend ports by N (for running multiple instances)",
     )
+    parser.add_argument(
+        "--profile",
+        default=None,
+        help=(
+            "Robot capability profile name (looks up agent_server/profiles/<name>.yaml) "
+            "or path to a profile YAML. Overrides ROBOT_PROFILE env var. "
+            "Default profiles: 'full' (Tidybot), 'single_arm_fr3' (FR3-only workstation)."
+        ),
+    )
     args = parser.parse_args()
+
+    # If --profile was given, set ROBOT_PROFILE so RobotProfile.load() picks it up
+    # when ServerConfig is constructed below.
+    if args.profile is not None:
+        os.environ["ROBOT_PROFILE"] = args.profile
 
     offset = args.port_offset
 

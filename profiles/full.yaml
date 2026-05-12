@@ -1,0 +1,20 @@
+# Full Tidybot profile — base + arm + gripper + camera + mocap, all services.
+# This is the default; everything not mentioned defaults to enabled.
+#
+# Use this profile when the agent_server is running on the standard Tidybot
+# setup (Panda arm + Tidybot mobile base + Robotiq gripper + RealSense + OptiTrack).
+
+name: full
+
+# Backends
+arm: true
+base: true
+gripper: true
+camera: true
+mocap: true
+
+# External services
+perception_server: true
+yolo_service: true
+graspgen_service: true
+display: true

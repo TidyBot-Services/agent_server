@@ -843,6 +843,23 @@ display = robot_sdk.display
 wb = robot_sdk.wb
 http = robot_sdk.http
 
+# Apply robot-profile capability filter: replace any disabled-capability
+# SDK globals with CapabilityStub so calls raise CapabilityNotAvailableError
+# instead of trying to use disconnected backends. No-op if ROBOT_CAPABILITIES
+# env var is unset (back-compat).
+from robot_sdk import apply_capability_filter as _apply_capability_filter
+_apply_capability_filter()
+# Re-bind locals after filtering, so user code sees stubs for disabled modules.
+arm      = robot_sdk.arm
+base     = robot_sdk.base
+gripper  = robot_sdk.gripper
+sensors  = robot_sdk.sensors
+rewind   = robot_sdk.rewind
+yolo     = robot_sdk.yolo
+graspgen = robot_sdk.graspgen
+display  = robot_sdk.display
+wb       = robot_sdk.wb
+
 # Also expose backends directly for advanced usage
 # (same pattern as rewind orchestrator uses)
 

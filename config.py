@@ -6,6 +6,8 @@ import os
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from robot_profile import RobotProfile
+
 
 # Root of the tidybot_uni project
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -278,3 +280,8 @@ class ServerConfig:
     lease: LeaseConfig = field(default_factory=LeaseConfig)
     service_manager: ServiceManagerConfig = field(default_factory=ServiceManagerConfig)
     dashboard: bool = True
+
+    # Robot capability profile — declares which hardware/services are available.
+    # Loaded from ROBOT_PROFILE env var (or --profile CLI arg via server.py)
+    # at construction time. Falls back to the "full" profile (everything enabled).
+    profile: RobotProfile = field(default_factory=RobotProfile.load)
