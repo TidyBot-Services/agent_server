@@ -593,22 +593,42 @@ class CodeExecutor:
         Returns:
             True if code was stopped, False if nothing was running
         """
-        if not self.is_running:
+        process = self._process
+        if process is None or process.poll() is not None:
             return False
 
-        logger.info(f"Stopping execution {self._execution_id} (reason: {reason})")
+        execution_id = self._execution_id or "unknown"
+        logger.info(f"Stopping execution {execution_id} (reason: {reason})")
+
+        # execute() resumes as soon as process.wait() completes. Publish the
+        # STOPPED marker before signalling so its finalizer cannot misclassify
+        # our SIGTERM as an ordinary failed process.
+        stopped_result = ExecutionResult(
+            status=ExecutionStatus.STOPPED,
+            execution_id=execution_id,
+            exit_code=None,
+            stdout="",
+            stderr="",
+            duration=0.0,
+            error=f"Stopped: {reason}",
+            stop_reason=reason,
+            started_at=self._start_time or 0.0,
+            code=self._current_code or "",
+            api_key_name=self._api_key_name,
+        )
+        self._last_result = stopped_result
 
         # Try graceful shutdown first
-        self._process.terminate()
+        process.terminate()
 
         try:
             # Wait up to 2 seconds for graceful shutdown
-            self._process.wait(timeout=2.0)
+            process.wait(timeout=2.0)
         except subprocess.TimeoutExpired:
             # Force kill if still running
             logger.warning(f"Graceful shutdown failed, force killing {self._execution_id}")
-            self._process.kill()
-            self._process.wait()
+            process.kill()
+            process.wait()
 
         duration = time.time() - self._start_time if self._start_time else 0
 
@@ -626,22 +646,14 @@ class CodeExecutor:
         }
         error_msg = reason_messages.get(reason, f"Stopped: {reason}")
 
-        self._last_result = ExecutionResult(
-            status=ExecutionStatus.STOPPED,
-            execution_id=self._execution_id or "unknown",
-            exit_code=self._process.returncode,
-            stdout=stdout,
-            stderr=stderr,
-            duration=duration,
-            error=error_msg,
-            stop_reason=reason,
-            started_at=self._start_time or 0.0,
-            code=self._current_code or "",
-            api_key_name=self._api_key_name,
-        )
-
-        self._process = None
-        self._log_execution_output(self._last_result)
+        stopped_result.exit_code = process.returncode
+        stopped_result.stdout = stdout
+        stopped_result.stderr = stderr
+        stopped_result.duration = duration
+        stopped_result.error = error_msg
+        if self._process is process:
+            self._process = None
+        self._log_execution_output(stopped_result)
         return True
 
     @property

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
+import secrets
 import time
 import uuid
 from collections import deque
@@ -92,6 +94,11 @@ class CodeSubmitRequest(BaseModel):
     reset_env: bool = Field(True, description="Reset sim environment before running (default: true)")
 
 
+class CodeCancelRequest(BaseModel):
+    """A per-job capability, returned only to the original submitter."""
+    cancel_token: str
+
+
 @dataclass
 class Job:
     """A queued code execution job."""
@@ -100,7 +107,10 @@ class Job:
     holder: str
     timeout: float
     reset_env: bool
-    status: str = "queued"          # queued | running | completed | failed
+    status: str = "queued"          # queued | running | completed | failed | cancelled
+    cancel_token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
+    cancel_requested: bool = False
+    ticket_id: str = ""
     position: int = 0
     submitted_at: float = 0.0
     started_at: float = 0.0
@@ -146,6 +156,24 @@ class JobQueue:
     def get_job(self, job_id: str) -> Optional[Job]:
         return self._jobs.get(job_id)
 
+    async def cancel(self, job: Job) -> dict:
+        """Cancel only this job, including its own in-flight subprocess."""
+        if job.status in ("completed", "failed", "cancelled"):
+            return {"job_id": job.job_id, "status": job.status, "cancelled": job.status == "cancelled"}
+        job.cancel_requested = True
+        if job.status == "queued":
+            self._pending = deque(item for item in self._pending if item != job.job_id)
+            self._update_positions()
+            job.status = "cancelled"
+            job.finished_at = time.time()
+        elif job.ticket_id and self._lease_manager is not None:
+            self._lease_manager.cancel_ticket(job.ticket_id)
+
+        executor = get_executor()
+        if job.execution_id and executor.is_running and executor._execution_id == job.execution_id:
+            await asyncio.to_thread(executor.stop, reason="job_cancelled")
+        return {"job_id": job.job_id, "status": job.status, "cancelled": job.status == "cancelled"}
+
     def list_jobs(self, holder: Optional[str] = None) -> list[Job]:
         jobs = list(self._jobs.values())
         if holder:
@@ -184,7 +212,7 @@ class JobQueue:
         while self._pending:
             job_id = self._pending.popleft()
             job = self._jobs.get(job_id)
-            if not job:
+            if not job or job.status == "cancelled":
                 continue
             self._update_positions()
             await self._run_job(job)
@@ -198,6 +226,10 @@ class JobQueue:
         try:
             # Wait for any ongoing reset to finish before acquiring
             for _ in range(120):
+                if job.cancel_requested:
+                    job.status = "cancelled"
+                    job.finished_at = time.time()
+                    return
                 if not self._lease_manager._resetting:
                     break
                 await asyncio.sleep(0.5)
@@ -210,7 +242,13 @@ class JobQueue:
                 # Lease not available — got a queue ticket, poll until granted
                 ticket_id = lease_resp.get("ticket_id")
                 if ticket_id:
+                    job.ticket_id = ticket_id
                     for _ in range(600):  # up to 10 min
+                        if job.cancel_requested:
+                            self._lease_manager.cancel_ticket(ticket_id)
+                            job.status = "cancelled"
+                            job.finished_at = time.time()
+                            return
                         ticket = self._lease_manager.check_ticket(ticket_id)
                         if ticket.get("status") == "granted":
                             lease_id = ticket.get("lease_id")
@@ -220,8 +258,13 @@ class JobQueue:
                         await asyncio.sleep(1)
 
             if not lease_id:
-                job.status = "failed"
-                job.error = "Could not acquire lease"
+                job.status = "cancelled" if job.cancel_requested else "failed"
+                job.error = "" if job.cancel_requested else "Could not acquire lease"
+                job.finished_at = time.time()
+                return
+
+            if job.cancel_requested:
+                job.status = "cancelled"
                 job.finished_at = time.time()
                 return
 
@@ -249,15 +292,18 @@ class JobQueue:
                 recorder.cleanup_old_recordings()
 
             job.result = result
-            job.status = "completed" if result.status == ExecutionStatus.COMPLETED else "failed"
+            if job.cancel_requested and result.status == ExecutionStatus.STOPPED:
+                job.status = "cancelled"
+            else:
+                job.status = "completed" if result.status == ExecutionStatus.COMPLETED else "failed"
             if result.error:
                 job.error = result.error
             job.finished_at = time.time()
             logger.info(f"Job {job.job_id} finished: {job.status} (execution {execution_id})")
 
         except Exception as e:
-            job.status = "failed"
-            job.error = str(e)
+            job.status = "cancelled" if job.cancel_requested else "failed"
+            job.error = "" if job.cancel_requested else str(e)
             job.finished_at = time.time()
             logger.error(f"Job {job.job_id} failed: {e}", exc_info=True)
 
@@ -646,6 +692,15 @@ def init_code_routes(lease_manager: LeaseManager, camera_backend: CameraBackend,
     job_queue = get_job_queue()
     job_queue.init(lease_manager, camera_backend, state_agg)
 
+    @router.get("/capabilities")
+    async def code_capabilities():
+        """Let safety-critical clients fail closed before submitting a job."""
+        return {
+            "schema_version": "tidybot.agent-server-code.v1",
+            "job_cancellation": True,
+            "cancel_auth": "per_job_token",
+        }
+
     @router.post("/submit")
     async def submit_job(body: CodeSubmitRequest):
         """Submit code to the job queue (fire-and-forget).
@@ -668,9 +723,20 @@ def init_code_routes(lease_manager: LeaseManager, camera_backend: CameraBackend,
 
         return {
             "job_id": job.job_id,
+            "cancel_token": job.cancel_token,
             "status": job.status,
             "position": job.position,
         }
+
+    @router.post("/jobs/{job_id}/cancel")
+    async def cancel_job(job_id: str, body: CodeCancelRequest):
+        """Stop a queued or running job using its submit-time capability."""
+        job = job_queue.get_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+        if not hmac.compare_digest(job.cancel_token, body.cancel_token):
+            raise HTTPException(status_code=403, detail="Invalid job cancellation token")
+        return await job_queue.cancel(job)
 
     @router.get("/jobs")
     async def list_jobs(holder: Optional[str] = Query(None, description="Filter by holder")):
