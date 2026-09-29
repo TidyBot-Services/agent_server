@@ -40,6 +40,11 @@ class WholeBodyError(Exception):
     pass
 
 
+class PlanningRejectedWithoutMotion(WholeBodyError):
+    """The planner returned no trajectory before this job sent any motion."""
+    pass
+
+
 class WholeBodyAPI:
     """Coordinated base + arm motion with collision-free planning.
 
@@ -114,11 +119,11 @@ class WholeBodyAPI:
         })
 
         if plan["status"] != "success":
-            raise WholeBodyError(f"Planning failed: {plan['status']}")
+            raise PlanningRejectedWithoutMotion(f"Planning failed: {plan['status']}")
 
         trajectory = plan["trajectory"]
         if not trajectory:
-            raise WholeBodyError("Planner returned empty trajectory")
+            raise PlanningRejectedWithoutMotion("Planner returned empty trajectory")
 
         print(f"[wb] Executing trajectory ({len(trajectory)} waypoints)")
         self._execute_trajectory(trajectory, timeout=timeout, mask=mask)

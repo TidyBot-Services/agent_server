@@ -1,6 +1,6 @@
 """Fault injection for the arm-only planned trajectory outcome boundary."""
 
-from robot_sdk.wb import WholeBodyAPI, WholeBodyError
+from robot_sdk.wb import WholeBodyAPI, WholeBodyError, PlanningRejectedWithoutMotion
 
 
 class _Arm:
@@ -38,6 +38,19 @@ def _execute(arm):
                       settle_timeout=0.01, arm_only_settle_timeout=0.01)
     waypoint = [0.0, 0.0, 0.0] + [0.5] * 7 + [0.0] * 6
     return wb, base, waypoint
+
+
+def test_planning_rejection_is_typed_before_any_motion_command():
+    arm = _Arm()
+    wb, base, _ = _execute(arm)
+    wb._call_planner = lambda *_: {"status": "curobo_no_trajectory", "trajectory": []}
+    try:
+        wb.move_to_pose(0.5, 0.2, 0.3, mask="arm_only")
+    except PlanningRejectedWithoutMotion as exc:
+        assert str(exc) == "Planning failed: curobo_no_trajectory"
+    else:
+        raise AssertionError("a rejected plan was treated as executable")
+    assert arm.sent == [] and base.calls == []
 
 
 def test_arm_only_success_holds_planned_base_pose():
