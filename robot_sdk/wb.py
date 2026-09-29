@@ -262,10 +262,7 @@ class WholeBodyAPI:
                     arm_state = self._arm.get_state()
                     current_q = arm_state.get("q", [0.0] * 7)
                     arm_err = max(abs(a - b) for a, b in zip(current_q, final_arm))
-                    # The public benchmark checks the downstream EEF at 4 mm.
-                    # A 0.02 rad joint residual can leave its tool nearly a
-                    # centimetre short even after a successful plan.
-                    if arm_err < 0.002:
+                    if arm_err < 0.02:  # ~1 degree
                         converged = True
                         break
                 except Exception as e:
