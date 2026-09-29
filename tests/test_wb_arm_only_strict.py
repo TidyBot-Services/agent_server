@@ -4,9 +4,10 @@ from robot_sdk.wb import WholeBodyAPI, WholeBodyError
 
 
 class _Arm:
-    def __init__(self, *, fail=False, converge=True):
+    def __init__(self, *, fail=False, converge=True, residual=0.0):
         self.fail = fail
         self.converge = converge
+        self.residual = residual
         self.sent = []
 
     def send_joint_position(self, target, *, blocking):
@@ -15,7 +16,8 @@ class _Arm:
         self.sent.append(list(target))
 
     def get_state(self):
-        return {"q": self.sent[-1] if self.converge else [0.0] * 7}
+        return {"q": [x - self.residual for x in self.sent[-1]]
+                if self.converge else [0.0] * 7}
 
 
 class _Base:
@@ -61,4 +63,15 @@ def test_arm_only_nonconvergence_is_not_reported_complete():
         assert "did not converge" in str(exc)
     else:
         raise AssertionError("arm nonconvergence was reported complete")
+    assert base.calls == []
+
+
+def test_arm_only_one_centiradian_residual_is_not_complete():
+    wb, base, waypoint = _execute(_Arm(residual=0.01))
+    try:
+        wb._execute_trajectory([waypoint], timeout=1.0, mask="arm_only")
+    except WholeBodyError as exc:
+        assert "did not converge" in str(exc)
+    else:
+        raise AssertionError("one centiradian residual was reported complete")
     assert base.calls == []
