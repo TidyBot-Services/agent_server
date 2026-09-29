@@ -25,6 +25,7 @@ Example:
 from __future__ import annotations
 
 import json
+import math
 import time
 import urllib.request
 import urllib.error
@@ -63,12 +64,14 @@ class WholeBodyAPI:
         planner_url: str = "http://localhost:5500",
         command_rate_hz: float = 5.0,
         settle_timeout: float = 5.0,
+        arm_only_settle_timeout: float = 10.0,
     ) -> None:
         self._arm = arm_backend
         self._base = base_backend
         self._planner_url = planner_url.rstrip("/")
         self._command_interval = 1.0 / command_rate_hz
         self._settle_timeout = settle_timeout
+        self._arm_only_settle_timeout = arm_only_settle_timeout
 
     # -- Public API -----------------------------------------------------------
 
@@ -211,6 +214,12 @@ class WholeBodyAPI:
         We send arm joint commands and base position targets at the configured rate.
         """
         start = time.time()
+        arm_only_base = trajectory[0][0:3] if trajectory and mask == "arm_only" else None
+        if arm_only_base is not None and any(
+            max(abs(a - b) for a, b in zip(wp[0:3], arm_only_base)) > 1e-4
+            for wp in trajectory
+        ):
+            raise WholeBodyError("Arm-only trajectory changes the base target")
 
         for i, wp in enumerate(trajectory):
             if time.time() - start > timeout:
@@ -220,6 +229,15 @@ class WholeBodyAPI:
             base_target = wp[0:3]    # [x, y, yaw]
             arm_target = wp[3:10]    # [j1..j7]
 
+            # Arm-only plans assume a fixed base. Reassert its planned start
+            # pose before streaming each arm command; a prior base target can
+            # remain active after the base API reports in-tolerance.
+            if arm_only_base is not None:
+                try:
+                    self._base.execute_action(*arm_only_base)
+                except Exception as e:
+                    raise WholeBodyError(f"Arm-only base hold failed at waypoint {i}: {e}") from e
+
             # Send arm joint positions (non-blocking — we're streaming)
             try:
                 self._arm.send_joint_position(arm_target, blocking=False)
@@ -228,8 +246,7 @@ class WholeBodyAPI:
                     raise WholeBodyError(f"Arm command failed at waypoint {i}: {e}") from e
                 print(f"[wb] Arm command failed at wp {i}: {e}")
 
-            # Send base position target (best-effort — base may not be connected)
-            if mask != "arm_only":
+            if arm_only_base is None:
                 try:
                     self._base.execute_action(*base_target)
                 except Exception:
@@ -242,16 +259,28 @@ class WholeBodyAPI:
             final = trajectory[-1]
             final_arm = final[3:10]
             final_base = final[0:3]
-            deadline = time.time() + self._settle_timeout
+            deadline = time.time() + (
+                self._arm_only_settle_timeout if arm_only_base is not None
+                else self._settle_timeout
+            )
             converged = False
+            current_q = None
+            arm_err = None
+            base_actual = None
+            stable_samples = 0
 
             while time.time() < deadline:
+                if arm_only_base is not None:
+                    try:
+                        self._base.execute_action(*arm_only_base)
+                    except Exception as e:
+                        raise WholeBodyError(f"Arm-only base hold failed during settle: {e}") from e
                 try:
                     self._arm.send_joint_position(final_arm, blocking=False)
                 except Exception as e:
                     if mask == "arm_only":
                         raise WholeBodyError(f"Final arm command failed: {e}") from e
-                if mask != "arm_only":
+                if arm_only_base is None:
                     try:
                         self._base.execute_action(*final_base)
                     except Exception:
@@ -262,15 +291,45 @@ class WholeBodyAPI:
                     arm_state = self._arm.get_state()
                     current_q = arm_state.get("q", [0.0] * 7)
                     arm_err = max(abs(a - b) for a, b in zip(current_q, final_arm))
-                    if arm_err < 0.02:  # ~1 degree
+                    if arm_only_base is not None:
+                        base_actual = self._base.get_state().get("base_pose")
+                        if base_actual is None or len(base_actual) != 3:
+                            raise ValueError("base pose unavailable")
+                        base_actual = [float(value) for value in base_actual]
+                        base_xy_err = math.hypot(
+                            base_actual[0] - arm_only_base[0],
+                            base_actual[1] - arm_only_base[1],
+                        )
+                        base_yaw_err = abs(math.atan2(
+                            math.sin(base_actual[2] - arm_only_base[2]),
+                            math.cos(base_actual[2] - arm_only_base[2]),
+                        ))
+                        stable_samples = (stable_samples + 1 if
+                            arm_err < 0.005 and base_xy_err < 0.005
+                            and base_yaw_err < 0.01 else 0)
+                        if stable_samples >= 3:
+                            converged = True
+                            break
+                    elif arm_err < 0.02:  # unchanged whole-body settle
                         converged = True
                         break
                 except Exception as e:
                     if mask == "arm_only":
-                        raise WholeBodyError(f"Arm state unavailable during settle: {e}") from e
+                        raise WholeBodyError(f"Arm or base state unavailable during settle: {e}") from e
 
                 time.sleep(self._command_interval)
 
+            if arm_only_base is not None:
+                print("[wb] arm_only_endpoint " + json.dumps({
+                    "base_target": [float(value) for value in arm_only_base],
+                    "base_actual": base_actual,
+                    "arm_target": [float(value) for value in final_arm],
+                    "arm_actual": None if current_q is None else
+                        [float(value) for value in current_q],
+                    "max_joint_error_rad": arm_err,
+                    "stable_samples": stable_samples,
+                    "converged": converged,
+                }, sort_keys=True))
             if mask == "arm_only" and not converged:
                 raise WholeBodyError("Arm trajectory did not converge before settle deadline")
 
