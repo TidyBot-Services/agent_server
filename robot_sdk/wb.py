@@ -118,7 +118,7 @@ class WholeBodyAPI:
             raise WholeBodyError("Planner returned empty trajectory")
 
         print(f"[wb] Executing trajectory ({len(trajectory)} waypoints)")
-        self._execute_trajectory(trajectory, timeout=timeout)
+        self._execute_trajectory(trajectory, timeout=timeout, mask=mask)
 
     def go_home(self, timeout: float = 15.0) -> None:
         """Plan and move to the arm home position (base stays in place).
@@ -203,7 +203,8 @@ class WholeBodyAPI:
     # -- Internal: trajectory execution ---------------------------------------
 
     def _execute_trajectory(self, trajectory: list[list[float]],
-                            timeout: float = 30.0) -> None:
+                            timeout: float = 30.0,
+                            mask: str = "whole_body") -> None:
         """Execute a planned trajectory by sending coordinated commands.
 
         Each waypoint is a full qpos: [base_x, base_y, base_yaw, j1..j7, g1..g6].
@@ -223,13 +224,16 @@ class WholeBodyAPI:
             try:
                 self._arm.send_joint_position(arm_target, blocking=False)
             except Exception as e:
+                if mask == "arm_only":
+                    raise WholeBodyError(f"Arm command failed at waypoint {i}: {e}") from e
                 print(f"[wb] Arm command failed at wp {i}: {e}")
 
             # Send base position target (best-effort — base may not be connected)
-            try:
-                self._base.execute_action(*base_target)
-            except Exception:
-                pass  # base unavailable — arm-only execution
+            if mask != "arm_only":
+                try:
+                    self._base.execute_action(*base_target)
+                except Exception:
+                    pass  # unchanged legacy whole-body behavior
 
             time.sleep(self._command_interval)
 
@@ -239,16 +243,19 @@ class WholeBodyAPI:
             final_arm = final[3:10]
             final_base = final[0:3]
             deadline = time.time() + self._settle_timeout
+            converged = False
 
             while time.time() < deadline:
                 try:
                     self._arm.send_joint_position(final_arm, blocking=False)
-                except Exception:
-                    pass
-                try:
-                    self._base.execute_action(*final_base)
-                except Exception:
-                    pass
+                except Exception as e:
+                    if mask == "arm_only":
+                        raise WholeBodyError(f"Final arm command failed: {e}") from e
+                if mask != "arm_only":
+                    try:
+                        self._base.execute_action(*final_base)
+                    except Exception:
+                        pass
 
                 # Check convergence
                 try:
@@ -256,10 +263,15 @@ class WholeBodyAPI:
                     current_q = arm_state.get("q", [0.0] * 7)
                     arm_err = max(abs(a - b) for a, b in zip(current_q, final_arm))
                     if arm_err < 0.02:  # ~1 degree
+                        converged = True
                         break
-                except Exception:
-                    pass
+                except Exception as e:
+                    if mask == "arm_only":
+                        raise WholeBodyError(f"Arm state unavailable during settle: {e}") from e
 
                 time.sleep(self._command_interval)
+
+            if mask == "arm_only" and not converged:
+                raise WholeBodyError("Arm trajectory did not converge before settle deadline")
 
         print("[wb] Trajectory complete")
