@@ -238,9 +238,14 @@ class WholeBodyAPI:
                 except Exception as e:
                     raise WholeBodyError(f"Arm-only base hold failed at waypoint {i}: {e}") from e
 
-            # Send arm joint positions (non-blocking — we're streaming)
+            # Arm-only plans use an acknowledged command for every waypoint.
+            # The PUB stream may silently drop an entire job; the bridge's
+            # REQ reply confirms that it applied each target to the simulator.
             try:
-                self._arm.send_joint_position(arm_target, blocking=False)
+                accepted = self._arm.send_joint_position(
+                    arm_target, blocking=arm_only_base is not None)
+                if mask == "arm_only" and accepted is not True:
+                    raise WholeBodyError("arm waypoint was not acknowledged")
             except Exception as e:
                 if mask == "arm_only":
                     raise WholeBodyError(f"Arm command failed at waypoint {i}: {e}") from e
@@ -276,7 +281,10 @@ class WholeBodyAPI:
                     except Exception as e:
                         raise WholeBodyError(f"Arm-only base hold failed during settle: {e}") from e
                 try:
-                    self._arm.send_joint_position(final_arm, blocking=False)
+                    accepted = self._arm.send_joint_position(
+                        final_arm, blocking=arm_only_base is not None)
+                    if mask == "arm_only" and accepted is not True:
+                        raise WholeBodyError("final arm target was not acknowledged")
                 except Exception as e:
                     if mask == "arm_only":
                         raise WholeBodyError(f"Final arm command failed: {e}") from e

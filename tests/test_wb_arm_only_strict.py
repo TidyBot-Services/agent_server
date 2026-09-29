@@ -8,11 +8,14 @@ class _Arm:
         self.fail = fail
         self.converge = converge
         self.sent = []
+        self.blocking_flags = []
 
     def send_joint_position(self, target, *, blocking):
         if self.fail:
             raise RuntimeError("injected arm transport failure")
         self.sent.append(list(target))
+        self.blocking_flags.append(blocking)
+        return True
 
     def get_state(self):
         return {"q": self.sent[-1] if self.converge else [0.0] * 7}
@@ -42,6 +45,7 @@ def test_arm_only_success_holds_planned_base_pose():
     wb, base, waypoint = _execute(arm)
     wb._execute_trajectory([waypoint], timeout=1.0, mask="arm_only")
     assert arm.sent
+    assert arm.blocking_flags and all(arm.blocking_flags)
     assert base.calls and all(call == (0.0, 0.0, 0.0) for call in base.calls)
 
 
@@ -54,6 +58,33 @@ def test_arm_only_transport_failure_is_not_swallowed():
     else:
         raise AssertionError("arm transport failure was swallowed")
     assert base.calls == [(0.0, 0.0, 0.0)]
+
+
+def test_arm_only_survives_dropped_unacknowledged_stream():
+    class DroppingStreamArm(_Arm):
+        def send_joint_position(self, target, *, blocking):
+            if not blocking:
+                return True  # PUB reports success despite dropping delivery.
+            return super().send_joint_position(target, blocking=blocking)
+
+    arm = DroppingStreamArm()
+    wb, _, waypoint = _execute(arm)
+    wb._execute_trajectory([waypoint], timeout=1.0, mask="arm_only")
+    assert arm.sent and all(arm.blocking_flags)
+
+
+def test_arm_only_rejects_negative_waypoint_ack():
+    class NegativeAckArm(_Arm):
+        def send_joint_position(self, target, *, blocking):
+            return False
+
+    wb, _, waypoint = _execute(NegativeAckArm())
+    try:
+        wb._execute_trajectory([waypoint], timeout=1.0, mask="arm_only")
+    except WholeBodyError as exc:
+        assert "not acknowledged" in str(exc)
+    else:
+        raise AssertionError("negative arm ACK was ignored")
 
 
 def test_arm_only_nonconvergence_is_not_reported_complete():
